@@ -1,0 +1,4092 @@
+---
+title: "OPUS Multiple Linear Regression BMD Change"
+author: "David Carro Vazquez"
+date: "2/27/2024"
+output: 
+  html_document:
+    toc: true               # Enable Table of Contents
+    toc_depth: 2            # Set depth of sections in TOC
+    toc_float: true         # Make the TOC float on the side
+---
+
+```{r}
+
+# Load Bootstrap's JavaScript for collapsible panels
+cat('<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>')
+cat('<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"></script>')
+
+
+
+```
+Values to control:
+
+n_seeds <- 3
+
+alpha_values <- seq(0.05,0.1,0.05)
+
+nfolds_values <- c(3)
+
+baseline_lambda <-
+  baseline_cvfit$lambda.1se
+
+lambda = lambda_1se
+
+```{r setup, include=FALSE}
+
+# Set chunk options and define CRAN repository
+knitr::opts_chunk$set(echo = TRUE)
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+
+
+# Load Bootstrap's JavaScript for collapsible panels
+cat('<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>')
+cat('<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"></script>')
+
+```
+
+
+
+
+## Data Loading
+
+
+```{r}
+
+# Load all required libraries in one chunk for global availability
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(pROC)
+library(readxl)
+library(writexl)
+library(lmtest)
+library(ggplot2)
+
+
+# Load data and process
+data1 <- read_excel("C:/Users/75118/Desktop/OPUS data for machine learning/logistic regression incident vertebral fracture/results miRs plus BTMs/final datafile for machine learning_phenotype-miRs_cox_miR_ratio_norm.xlsx")
+
+# Remove unwanted columns and omit missing values
+data <- data1[, -1]
+data <- na.omit(data)
+
+# Define necessary column indices here
+
+columns_omics <- 8 # ADD 1ST COLUMN WITH OMICS DATA HERE (ONLY ONE NUMBER)
+columns_nonomics <- 7 # ADD LAST COLUMN WITH NON-OMICS DATA HERE (ONLY ONE NUMBER)
+#columns_categoric <- 2 # ADD COLUMNS WITH CATEGORICAL DATA HERE (COULD BE SEVERAL NUMBERS OR RANGES)
+columns_response <- 7 # ADD COLUMNS WITH RESPONSE DATA HERE (COULD BE SEVERAL NUMBERS OR RANGES)
+columns_predictors <- 1:6 # ADD COLUMNS WITH PREDICTOR DATA HERE (COULD BE SEVERAL NUMBERS OR RANGES)
+columns_predictors_x <- 1:6 # ADD COLUMNS WITH MAIN (NON-OMIC) PREDICTOR x_train_matrix DATA HERE, COUNTING ALL LEVELS OF ALL FACTORIZED VARIABLES (COULD BE SEVERAL NUMBERS OR RANGES)
+
+
+# Define response and predictor columns based on data
+response_cols <- colnames(data)[columns_response]
+predictor_cols_base <- colnames(data)[columns_predictors]
+
+
+# Function to balance a dataset by undersampling the majority class
+
+balance_data <- function(df, response_col) {
+  minority <- df[df[[response_col]] == 1, ]
+  majority <- df[df[[response_col]] == 0, ]
+  n_samples <- nrow(minority)
+  undersampled_majority <- majority %>%
+    sample_n(size = min(nrow(majority), n_samples), replace = FALSE)
+  balanced <- rbind(minority, undersampled_majority)
+  return(balanced[sample(nrow(balanced)), ])  # Shuffle rows
+}
+
+
+# Function to balance a dataset with weights
+
+compute_case_weights <- function(df, response_col) {
+  n_pos <- sum(df[[response_col]] == 1)
+  n_neg <- sum(df[[response_col]] == 0)
+  total <- n_pos + n_neg
+  weight_pos <- total / (2 * n_pos)
+  weight_neg <- total / (2 * n_neg)
+  weights <- ifelse(df[[response_col]] == 1, weight_pos, weight_neg)
+  return(weights)
+}
+
+
+use_weights <- TRUE  # Set to TRUE to use weights instead of undersampling
+
+```
+
+
+## Adjusting Data 
+
+```{r}
+# ==================> TODO: ADD 1ST COLUMN WITH OMICS DATA HERE <==================
+
+
+# Identify columns with all zero values in columns 11 to 15546
+cols_to_remove <- sapply(data[, columns_omics:ncol(data)], function(col) all(col == 0)) 
+
+
+
+# ==================> TODO: ADD LAST COLUMN WITH NON-OMICS DATA HERE <==================
+
+
+# Remove columns with all zero values from data
+data <- data[, c(1:columns_nonomics, which(!cols_to_remove) + columns_nonomics)]
+
+
+
+# ==================> TODO: ADD 1ST COLUMN WITH OMICS DATA HERE <==================
+
+
+# Verify if any columns with all zero values are still present
+cols_with_all_zeros <- sapply(data[, columns_omics:ncol(data)], function(col) all(col == 0))
+
+
+
+zero_columns <- names(data)[which(cols_with_all_zeros)]
+
+# Output results
+if (length(zero_columns) == 0) {
+  cat("All zero-only columns have been removed successfully.\n")
+} else {
+  cat("Columns with all zero values still present:\n")
+  print(zero_columns)
+}
+
+# Display the dimensions of the cleaned data
+cat("Final dimensions of data:", dim(data), "\n")
+
+
+
+
+```
+
+
+
+
+## Using a categorical variable as a factor (if there is any in our data)
+
+
+```{r}
+
+
+# ==================> TODO: ADD COLUMNS WITH CATEGORICAL DATA HERE <==================
+
+
+# Convert the third column to a factor
+#data[ , columns_categoric] <- lapply(data[ , columns_categoric], as.factor)
+
+
+
+
+# ==================> TODO: ADD COLUMNS WITH CATEGORICAL DATA HERE <==================
+
+
+# Define the factorized column 
+#factor_columns <- colnames(data)[columns_categoric]  # We will use this for machine learning at the end of the pipeline
+
+
+
+
+
+# Create the contrasts list, handling both single and multiple factor columns
+#contrasts_list <- lapply(setNames(factor_columns, factor_columns), function(col) contrasts(data[[col]], contrasts = FALSE))
+
+```
+
+
+
+## Data Scaling
+
+
+```{r}
+
+
+# ==================> TODO: ADD 1ST COLUMN WITH OMICS DATA HERE <==================
+
+
+# Scale the omics data 
+scaled_biomarker_data <- scale(data[, columns_omics:ncol(data)])
+
+
+# ==================> TODO: ADD 1ST COLUMN WITH OMICS DATA HERE <==================
+
+
+# Update the dataset with the scaled miRNA data
+data[, columns_omics:ncol(data)] <- scaled_biomarker_data
+
+```
+
+## Scaling of adjustment-normalization biomarker (if any)
+
+```{r}
+# Scale the adjustment biomarker 
+scaled_adjmolecule_data <- scale(data[, 1])
+
+# Update the dataset with the scaled adjustment molecule 
+data[, 1] <- scaled_adjmolecule_data
+
+```
+
+## Data Preparation
+
+
+```{r}
+
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+
+
+# Step 1: Loading Required Libraries
+# First, ensure you have the necessary R packages installed and loaded. If not installed
+
+
+if (!require(reshape2)) {
+  install.packages("reshape2", repos = "https://cran.rstudio.com")
+  library(reshape2)
+}
+
+
+library(tidymodels)
+
+# Install kableExtra if not already installed
+if (!requireNamespace("kableExtra", quietly = TRUE)) {
+  install.packages("kableExtra")
+}
+
+# Load the package
+library(kableExtra)
+
+
+
+
+```
+
+
+```{r}
+
+
+# ==================> TODO: ADD LAST COLUMN WITH NON-OMICS DATA HERE <==================
+
+
+
+# Preparing the datasets
+data_noBiomarker <- data %>%
+  select(1:columns_nonomics)
+
+
+# ==================> TODO: ADD 1ST COLUMN WITH OMICS DATA HERE <==================
+
+
+data_Biomarker <- data %>%
+  select(columns_omics:ncol(data))
+
+```
+
+
+## For loop to individually select significant predictor biomarkers for the binomial response variables in logistic regression handling class imbalance with undersampling of the majority class
+
+AUC baseline: Performance of the logistic (binomial or multinomial) regression model without the selected biomarkers, only with the main predictors
+AUC biomakrer: Performance of the logistic (binomial or multinomial) regression model including the selected biomarker as a significant predictor of the response
+ANOVA: ANOVA of baseline model vs model with biomarker
+
+Weights Affect Model Likelihoods Differently: glm() with weights applies weighted maximum likelihood estimation, meaning the likelihood values it computes are different from an unweighted model. The anova() function expects models to be directly comparable, but weighted and unweighted models don't have likelihoods on the same scale. This makes the likelihood-ratio test invalid in some cases, leading to NA in p-values. That is why instead of comparing weighted vs. unweighted models, ensure both models, the baseline and the full model with biomarker, use weights. This makes sure anova() compares models estimated in the same way.
+
+
+Removed for loop over response_cols as they is only one which was used for the splitting of the data into training and test sets, which we used at the beginning of the code for both our individual marker selection loop and our elastic net marker selection loop!!! 
+
+```{r results='asis', warning=FALSE}
+
+# Load necessary libraries
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(pROC)
+library(writexl)
+library(caret)  # Required for stratified sampling
+library(DT)
+
+# Initialize lists to store the results
+results_list <- list()
+roc_storage <- list()
+predictor_results <- list()
+
+
+data$row_id <- 1:nrow(data)
+
+# Create directory for Excel files if it doesn't exist
+dir.create("Individually Selected Predictors", showWarnings = FALSE)
+
+# Function to calculate NRI (Net Reclassification Improvement)
+calculate_nri <- function(biomarker_probs,
+                          baseline_probs,
+                          actual_outcomes,
+                          risk_cutoffs = c(0.1,0.2)) {
+
+  categorize_risk <- function(prob, cutoffs){
+    findInterval(prob, vec = c(-Inf, cutoffs, Inf))
+  }
+
+  baseline_risk <- categorize_risk(baseline_probs, risk_cutoffs)
+  biomarker_risk <- categorize_risk(biomarker_probs, risk_cutoffs)
+
+  reclassified <- biomarker_risk - baseline_risk
+
+  events <- actual_outcomes == 1
+  non_events <- actual_outcomes == 0
+
+  correct_events <- sum(reclassified[events] > 0) / sum(events)
+  incorrect_events <- sum(reclassified[events] < 0) / sum(events)
+
+  correct_non_events <- sum(reclassified[non_events] < 0) / sum(non_events)
+  incorrect_non_events <- sum(reclassified[non_events] > 0) / sum(non_events)
+
+  (correct_events - incorrect_events) +
+    (correct_non_events - incorrect_non_events)
+}
+
+
+
+##########################################################
+######################## TODO ############################
+##########################################################
+
+
+###############################
+##### Robustness threshold ####
+###############################
+
+##########################################################
+############ Generate fixed train/test splits ############
+##########################################################
+
+n_seeds <- 50
+
+min_frequency <- ceiling(0.80 * n_seeds)
+
+splits <- vector("list", n_seeds)
+
+for(seed in 1:n_seeds){
+
+  set.seed(seed)
+
+  splits[[seed]] <-
+    initial_split(
+      data,
+      prop = 0.70,
+      strata = data[[response_cols]]
+    )
+
+}
+
+
+for(seed in 1:n_seeds){
+
+  cat("\n=========================\n")
+  cat("Seed:",seed,"\n")
+  cat("=========================\n")
+
+  split <- splits[[seed]]
+
+  train_raw <- training(split)
+  test_data <- testing(split)
+  
+  # Loop through the columns of data_Biomarker
+
+response_col <- response_cols[[1]]
+
+baseline_formula <- as.formula(
+  paste(response_col, "~", paste(predictor_cols_base, collapse = " + "))
+)
+
+# Create a single balanced training set
+if (use_weights) {
+
+  balanced_train_data <- train_raw
+
+  balanced_weights <- compute_case_weights(
+    balanced_train_data,
+    response_col
+  )
+
+} else {
+
+  balanced_train_data <- balance_data(
+    train_raw,
+    response_col
+  )
+
+  balanced_weights <- rep(1, nrow(balanced_train_data))
+}
+
+baseline_model_balanced <-
+  glm(
+    baseline_formula,
+    family = binomial,
+    data = balanced_train_data,
+    weights = balanced_weights
+  )
+
+baseline_probs <-
+  predict(
+    baseline_model_balanced,
+    newdata = test_data,
+    type = "response"
+  )
+
+baseline_roc <-
+  suppressMessages(
+    roc(
+      test_data[[response_col]],
+      baseline_probs
+    )
+  )
+
+baseline_auc <- round(auc(baseline_roc),3)
+
+for(i in 2:ncol(data_Biomarker)){
+
+  myBiomarker <- data_Biomarker[,i]
+
+  temp <- cbind(data_noBiomarker,myBiomarker)
+
+  colName <- names(data_Biomarker)[i]
+
+  names(temp)[ncol(temp)] <- "Biomarker"
+
+  predictors <- predictor_cols_base[
+    predictor_cols_base != response_col
+  ]
+
+  predictor_cols <- c(predictors,"Biomarker")
+
+  formula <-
+    as.formula(
+      paste(
+        response_col,
+        "~",
+        paste(predictor_cols,collapse=" + ")
+      )
+    )
+
+  temp_train <- train_raw
+
+  temp_test <- test_data
+
+  biomarker_values <- pull(myBiomarker)
+
+  temp_train$Biomarker <-
+    biomarker_values[
+      match(temp_train$row_id,data$row_id)
+    ]
+
+  temp_test$Biomarker <-
+    biomarker_values[
+      match(temp_test$row_id,data$row_id)
+    ]
+
+  model_data <- balanced_train_data
+
+  case_weights <- balanced_weights
+
+  model_data$Biomarker <-
+    biomarker_values[
+      match(model_data$row_id,data$row_id)
+    ]
+
+  glm_biomarker <-
+    glm(
+      formula,
+      family=binomial,
+      data=model_data,
+      weights=case_weights
+    )
+
+  biomarker_probs <-
+    predict(
+      glm_biomarker,
+      newdata=temp_test,
+      type="response"
+    )
+
+  biomarker_roc <-
+    suppressMessages(
+      roc(
+        temp_test[[response_col]],
+        biomarker_probs
+      )
+    )
+
+  auc_biomarker <- round(
+    auc(biomarker_roc),
+    3
+  )
+
+  anova_result <-
+    anova(
+      baseline_model_balanced,
+      glm_biomarker,
+      test="Chisq"
+    )
+
+  anova_glm <-
+    round(
+      anova_result$`Pr(>Chi)`[2],
+      3
+    )
+
+  summary_model <- summary(glm_biomarker)
+  
+  coef_df <- as.data.frame(summary_model$coefficients)
+
+  coef_df$Predictor <- rownames(coef_df)
+
+  coef_df$Seed <- seed
+
+  coef_df$Biomarker <- colName
+
+  coef_df$Response <- response_col
+
+  coef_df$FDR <-
+    p.adjust(
+      coef_df$`Pr(>|z|)`,
+      method = "fdr"
+    )
+
+predictor_results[[length(predictor_results)+1]] <-
+  coef_df
+
+  estimate_biomarker <-
+    round(
+      summary_model$coefficients["Biomarker","Estimate"],
+      3
+    )
+
+  p_value_biomarker <-
+    round(
+      summary_model$coefficients["Biomarker","Pr(>|z|)"],
+      3
+    )
+
+  fdr_values <-
+    round(
+      p.adjust(
+        summary_model$coefficients[,"Pr(>|z|)"],
+        method="fdr"
+      ),
+      3
+    )
+
+  fdr_biomarker <- fdr_values["Biomarker"]
+
+  nri_value <-
+    calculate_nri(
+      biomarker_probs=biomarker_probs,
+      baseline_probs=baseline_probs,
+      actual_outcomes=temp_test[[response_col]]
+    )
+
+  results_list[[length(results_list)+1]] <-
+    data.frame(
+
+      Seed = seed,
+
+      Biomarker = colName,
+
+      Response = response_col,
+
+      Estimate = estimate_biomarker,
+
+      Pr = p_value_biomarker,
+
+      FDR = fdr_biomarker,
+
+      AUC_baseline = baseline_auc,
+
+      AUC_biomarker = auc_biomarker,
+
+      Delta_AUC = auc_biomarker - baseline_auc,
+
+      ANOVA_p_value = anova_glm,
+
+      NRI = round(nri_value,3),
+
+      Significant =
+        p_value_biomarker < 0.1,
+
+      stringsAsFactors = FALSE
+
+    )
+
+  roc_storage[[paste(seed, response_col, colName, sep="_")]] <-
+    list(
+
+      roc = biomarker_roc,
+
+      auc = auc_biomarker,
+
+      seed = seed,
+
+      biomarker = colName,
+
+      response = response_col
+
+    )
+
+}
+
+}   # ---------------- END OF 50-SEED LOOP ----------------
+
+
+###############################
+#### Combine all results ######
+###############################
+
+results <- bind_rows(results_list)
+
+predictor_results <- bind_rows(predictor_results)
+
+###############################
+#### Summary across seeds #####
+###############################
+
+summary_results <-
+  results %>%
+  group_by(Response, Biomarker) %>%
+  summarise(
+
+    Mean_Estimate = mean(Estimate, na.rm = TRUE),
+    SD_Estimate = sd(Estimate, na.rm = TRUE),
+
+    Mean_Pr = mean(Pr, na.rm = TRUE),
+    Median_Pr = median(Pr, na.rm = TRUE),
+
+    Mean_FDR = mean(FDR, na.rm = TRUE),
+
+    Mean_AUC_baseline = mean(AUC_baseline, na.rm = TRUE),
+    Lower95_AUC_baseline =
+      quantile(AUC_baseline, 0.025, na.rm = TRUE),
+    Upper95_AUC_baseline =
+      quantile(AUC_baseline, 0.975, na.rm = TRUE),
+
+    Mean_AUC_biomarker = mean(AUC_biomarker, na.rm = TRUE),
+    Lower95_AUC_biomarker =
+      quantile(AUC_biomarker, 0.025, na.rm = TRUE),
+    Upper95_AUC_biomarker =
+      quantile(AUC_biomarker, 0.975, na.rm = TRUE),
+
+    Mean_Delta_AUC = mean(Delta_AUC, na.rm = TRUE),
+    Lower95_Delta_AUC =
+      quantile(Delta_AUC, 0.025, na.rm = TRUE),
+    Upper95_Delta_AUC =
+      quantile(Delta_AUC, 0.975, na.rm = TRUE),
+
+    Median_ANOVA = median(ANOVA_p_value, na.rm = TRUE),
+
+    Mean_NRI = mean(NRI, na.rm = TRUE),
+    Lower95_NRI =
+      quantile(NRI, 0.025, na.rm = TRUE),
+    Upper95_NRI =
+      quantile(NRI, 0.975, na.rm = TRUE),
+
+    Significant_frequency = sum(Significant),
+    Significant_percent = round(100 * mean(Significant), 1),
+
+    .groups = "drop"
+
+  )
+
+###############################
+##### Predictor summary #######
+###############################
+
+predictor_summary <-
+
+predictor_results %>%
+
+group_by(
+    Response,
+    Biomarker,
+    Predictor
+) %>%
+
+summarise(
+
+    Mean_Estimate =
+        mean(Estimate),
+
+    SD_Estimate =
+        sd(Estimate),
+
+    Mean_OR =
+        exp(mean(Estimate)),
+
+    Lower95_OR =
+        quantile(exp(Estimate), 0.025),
+
+    Upper95_OR =
+        quantile(exp(Estimate), 0.975),
+
+    Mean_Pr =
+        mean(`Pr(>|z|)`),
+
+    Median_Pr =
+        median(`Pr(>|z|)`),
+
+    Mean_FDR =
+        mean(FDR),
+
+    Significant_frequency =
+        sum(`Pr(>|z|)` < 0.05),
+
+    Significant_percent =
+        100 * mean(`Pr(>|z|)` < 0.05),
+
+    FDR_Significant_frequency =
+        sum(FDR < 0.05),
+
+    FDR_Significant_percent =
+        round(100 * mean(FDR < 0.05), 1),
+
+    .groups = "drop"
+
+) %>%
+
+mutate(
+
+    Mean_OR =
+        sprintf(
+            "%.3f (%.3f–%.3f)",
+            Mean_OR,
+            Lower95_OR,
+            Upper95_OR
+        )
+
+) %>%
+
+select(
+
+    -Lower95_OR,
+    -Upper95_OR
+
+)
+
+
+###############################
+##### Select Top 5 ############
+###############################
+
+robust_results <-
+summary_results %>%
+filter(
+
+  Significant_frequency >= min_frequency,
+  Mean_Delta_AUC > 0
+
+) %>%
+arrange(
+
+  desc(Significant_frequency),
+  desc(Mean_Delta_AUC),
+  desc(Mean_NRI),
+  desc(Mean_AUC_biomarker),
+  Mean_Pr
+
+)
+
+###############################
+#### Display version ##########
+###############################
+
+robust_results_display <-
+
+robust_results %>%
+
+mutate(
+
+  Mean_AUC_baseline =
+    sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_AUC_baseline,
+      Lower95_AUC_baseline,
+      Upper95_AUC_baseline
+    ),
+
+  Mean_AUC_biomarker =
+    sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_AUC_biomarker,
+      Lower95_AUC_biomarker,
+      Upper95_AUC_biomarker
+    ),
+
+  Mean_Delta_AUC =
+    sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_Delta_AUC,
+      Lower95_Delta_AUC,
+      Upper95_Delta_AUC
+    ),
+
+  Mean_NRI =
+    sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_NRI,
+      Lower95_NRI,
+      Upper95_NRI
+    )
+
+) %>%
+
+select(
+
+  Response,
+  Biomarker,
+
+  Mean_AUC_baseline,
+  Mean_AUC_biomarker,
+  Mean_Delta_AUC,
+
+  Median_ANOVA,
+
+  Mean_NRI,
+
+  Significant_frequency,
+  Significant_percent
+
+)
+
+top5 <-
+robust_results %>%
+slice_head(n = 5)
+
+###############################
+##### HTML table ##############
+###############################
+
+cat("<details><summary style='font-size:1.8em;'>Robust Biomarkers Across 50 Random Stratified 70/30 Splits</summary><br>")
+
+datatable(
+  robust_results_display,
+  rownames = FALSE,
+  caption = htmltools::tags$caption(
+    style = "caption-side: top; text-align: left; font-weight: bold;",
+    "Average performance across 50 random stratified 70/30 train/test splits"
+  ),
+  extensions = "Buttons",
+  options = list(
+    pageLength = 50,
+    autoWidth = TRUE,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel"),
+    order = list()
+  )
+) %>%
+  formatRound(
+    columns = which(sapply(robust_results_display, is.numeric)),
+    digits = 3
+  )
+
+cat("</details>")
+
+###############################
+##### Save Excel files ########
+###############################
+
+write_xlsx(
+  results,
+  "Individually Selected Predictors/Individual_Biomarkers_AllSeeds.xlsx"
+)
+
+write_xlsx(
+  summary_results,
+  "Individually Selected Predictors/Individual_Biomarkers_Summary.xlsx"
+)
+
+write_xlsx(
+  robust_results_display,
+  "Individually Selected Predictors/Robust_Biomarkers.xlsx"
+)
+
+###############################
+##### Representative ROC ######
+###############################
+
+cat("<details><summary style='font-size:1.8em;'>Representative ROC Curves (Top 5 Biomarkers)</summary><br>")
+
+for(i in seq_len(nrow(top5))){
+
+  biomarker <- top5$Biomarker[i]
+
+  target_auc <- top5$Mean_AUC_biomarker[i]
+
+  tmp <-
+    results %>%
+    filter(
+      Biomarker == biomarker,
+      Response == top5$Response[i]
+    )
+
+  closest_seed <-
+    tmp$Seed[
+      which.min(abs(tmp$AUC_biomarker - target_auc))
+    ]
+
+  roc_key <-
+    paste(
+      closest_seed,
+      top5$Response[i],
+      biomarker,
+      sep = "_"
+    )
+
+  roc_obj <- roc_storage[[roc_key]]
+
+  plot(
+    roc_obj$roc,
+    main = paste0(
+      biomarker,
+      "\nRepresentative ROC (Seed ",
+      closest_seed,
+      ", AUC = ",
+      sprintf("%.3f", roc_obj$auc),
+      ")"
+    )
+  )
+
+}
+
+cat("</details>")
+
+###############################
+##### Clean-up ################
+###############################
+
+train_raw$row_id <- NULL
+test_data$row_id <- NULL
+data_noBiomarker$row_id <- NULL
+
+rm(results_list)
+rm(roc_storage)
+
+
+```
+
+## Obtaining the estimates and p-values of all predictors included in the baseline model together with the selected significant biomarker
+
+```{r results='asis'}
+
+# Load necessary libraries for table display
+library(knitr)
+library(kableExtra)
+
+###############################
+#### Predictor summaries ######
+###############################
+
+dir.create(
+  "Models with Individually Selected Biomarkers",
+  showWarnings = FALSE
+)
+
+sorted_results <-
+  robust_results %>%
+  arrange(
+    desc(Significant_frequency),
+    desc(Mean_Delta_AUC),
+    desc(Mean_NRI),
+    desc(Mean_AUC_biomarker)
+  )
+
+for(response_var in unique(sorted_results$Response)){
+
+  cat(paste0(
+    '<details><summary style="font-size:1.2em;"><strong>',
+    response_var,
+    '</strong></summary>',
+    '<div style="margin-left:20px;margin-top:10px;">'
+  ))
+
+  response_results <-
+    sorted_results %>%
+    filter(Response == response_var)
+
+  for(i in seq_len(nrow(response_results))){
+
+    biomarker <- response_results$Biomarker[i]
+
+    model_name <- paste(
+      biomarker,
+      response_var,
+      sep = "_"
+    )
+
+    predictors_df <-
+
+  predictor_summary %>%
+
+  filter(
+
+    Response == response_var,
+    Biomarker == biomarker
+
+  ) %>%
+
+  mutate(
+
+    `β ± SD` = sprintf(
+      "%.3f ± %.3f",
+      Mean_Estimate,
+      SD_Estimate
+    ),
+
+    Odds_Ratio = Mean_OR
+
+  ) %>%
+
+  select(
+
+    Predictor,
+
+    `β ± SD`,
+
+    Odds_Ratio,
+
+    Median_Pr,
+
+    Mean_FDR,
+
+    Significant_percent
+
+  )
+
+    if(nrow(predictors_df)==0)
+      next
+
+    ####################################################
+    #### Collapsible section ###########################
+    ####################################################
+
+    cat(paste0(
+
+      '<details><summary style="font-size:1.1em;">',
+
+      biomarker,
+
+      "</summary>",
+
+      '<div style="margin-left:20px;margin-top:10px;">'
+
+    ))
+
+    ####################################################
+    #### Biomarker performance #########################
+    ####################################################
+
+    cat(
+
+      paste0(
+
+        "<b>Significant frequency:</b> ",
+        response_results$Significant_frequency[i],
+        "/",
+        n_seeds,
+        " (",
+        response_results$Significant_percent[i],
+        "%)<br>",
+
+        "<b>Mean biomarker AUC:</b> ",
+        round(response_results$Mean_AUC_biomarker[i], 3),
+        " (95% empirical interval: ",
+        round(response_results$Lower95_AUC_biomarker[i], 3),
+        "–",
+        round(response_results$Upper95_AUC_biomarker[i], 3),
+        ")<br>",
+
+        "<b>Mean ΔAUC:</b> ",
+        round(response_results$Mean_Delta_AUC[i], 3),
+        " (95% empirical interval: ",
+        round(response_results$Lower95_Delta_AUC[i], 3),
+        "–",
+        round(response_results$Upper95_Delta_AUC[i], 3),
+        ")<br>",
+
+        "<b>Mean NRI:</b> ",
+        round(response_results$Mean_NRI[i], 3),
+        " (95% empirical interval: ",
+        round(response_results$Lower95_NRI[i], 3),
+        "–",
+        round(response_results$Upper95_NRI[i], 3),
+        ")<br><br>"
+
+      )
+
+    )
+
+    ####################################################
+    #### Save Excel ####################################
+    ####################################################
+
+    file_name <-
+
+      paste0(
+
+        "Models with Individually Selected Biomarkers/",
+
+        gsub(
+          "[^[:alnum:]_]",
+          "_",
+          model_name
+        ),
+
+        ".xlsx"
+
+      )
+
+    write_xlsx(
+      predictors_df,
+      path = file_name
+    )
+
+    cat(
+
+      paste0(
+
+        '<a href="',
+
+        file_name,
+
+        '" download>Download averaged predictor table (.xlsx)</a><br><br>'
+
+      )
+
+    )
+
+    ####################################################
+    #### HTML table ####################################
+    ####################################################
+
+    kable(
+
+      predictors_df,
+
+      format = "html",
+
+      digits = 3,
+
+      caption = paste(
+        "Average predictor coefficients across",
+        n_seeds,
+        "random stratified 70/30 train/test splits"
+      ),
+
+      align = "c"
+
+    ) %>%
+
+      kable_styling(
+
+        bootstrap_options = c(
+          "striped",
+          "hover",
+          "condensed",
+          "responsive"
+        ),
+
+        full_width = FALSE,
+
+        position = "center"
+
+      ) %>%
+
+      column_spec(
+        1,
+        bold = TRUE
+      ) %>%
+
+      row_spec(
+        0,
+        bold = TRUE,
+        color = "white",
+        background = "black"
+      ) %>%
+
+      print()
+
+    cat("</div></details><br>")
+
+  }
+
+  cat("</div></details><br>")
+
+}
+
+
+```
+
+
+A categorical variable that for example contains values from 1 to 4 in the original dataset will only show levels 2 to 4 in the output of the model. This suggests that the reference level in the model is set to level 1, meaning the coefficients for levels 2 to 4 represent differences compared to level 1. When using a categorical variable in model regression, R automatically treats one of the levels as the reference category, comparing all other levels against it. This is standard practice for handling categorical predictors in regression models.
+
+
+
+
+## Package Loading to perform Elastic Net
+
+```{r fig.width=12, fig.height=8}
+
+
+
+
+library(tidyverse) 
+library(survival)
+library(glmnet)  # For regularization and model fitting
+library(caret)   # For data splitting and preprocessing
+library(rsample) # For stratified sampling
+library(knitr)
+
+
+# No need to standarize the data as the function glmnet() does it automatically in the same way as the scale() function (substracting the mean of the predictor to each predictor value and dividing for the SD) -> but we do not want to scale everything, only the biomarkers! ->
+
+# Update the dataset with the scaled biomarker data ----> Previously done
+
+
+
+
+```
+
+
+
+## Performing Elastic Net and obtaining the cross-validation plots
+
+
+We also calculate here the performance of the model generated by machine learning, as well as the performance of the model using the same matrix ustilised for machine learning and the same machine learning algorithm. This will not result in any "chosen" variable since we are forcing the machine learning algorithm to use the predictors that we consider mandatory, but it will give us a performance of the "machine learning - baseline model" that we can compare with the performance of the models generated by machine learning when freely choosing biomarkers within our omic dataset. These will indicate how good the machine learning model predictions are, specially compared with a baseline model without biomarkers from our omics data.
+
+
+Removed for loop over response_cols as they is only one which was used for the splitting of the data into training and test sets, which we used at the beginning of the code for both our individual marker selection loop and our elastic net marker selection loop!!! 
+
+
+```{r results='asis'}
+
+
+############################################################
+################ Elastic Net initialization ################
+############################################################
+
+library(glmnet)
+library(tidymodels)
+library(kableExtra)
+library(caret)
+library(pROC)
+library(dplyr)
+library(writexl)
+
+
+############################################################
+################ TODO User settings ########################
+############################################################
+
+
+response_cols <- colnames(data)[columns_response]
+
+exclude_columns <- c(response_cols, "row_id")
+
+
+alpha_values <- seq(0.05,1,0.05)
+
+nfolds_values <- c(5,10,20)
+
+
+############################################################
+################ Storage ###################################
+############################################################
+
+results_list <- list()
+
+coef_list <- list()
+
+selected_variables_list <- list()
+
+roc_storage <- list()
+
+warnings <- character()
+
+############################################################
+############ Store cv.glmnet objects ########################
+############################################################
+
+cv_models <- list()
+
+############################################################
+############### De novo refitting storage ##################
+############################################################
+
+refit_results_list <- list()
+
+refit_coef_list <- list()
+
+refit_roc_storage <- list()
+
+############################################################
+################ Warning handler ###########################
+############################################################
+
+capture_warning <- function(w){
+
+  warnings <<-
+    c(
+      warnings,
+      conditionMessage(w)
+    )
+
+  invokeRestart("muffleWarning")
+
+}
+
+
+############################################################
+############## Start warning capture ########################
+############################################################
+
+withCallingHandlers({
+
+for(seed in 1:n_seeds){
+
+  cat("\n=========================\n")
+  cat("Seed:", seed, "\n")
+  cat("=========================\n")
+
+
+  ##########################################################
+  ########### Reuse predefined stratified split#############
+  ##########################################################
+
+  response_col <- response_cols[[1]]
+
+  split <- splits[[seed]]
+
+  train_raw <- training(split)
+
+  test_data <- testing(split)
+
+  ##########################################################
+  ########### Balance / Weights ############################
+  ##########################################################
+
+  if(use_weights){
+
+    train_data <- train_raw
+
+    sample_weights <-
+      compute_case_weights(
+        train_data,
+        response_col
+      )
+
+  }else{
+
+    train_data <-
+      balance_data(
+        train_raw,
+        response_col
+      )
+
+    sample_weights <-
+      rep(
+        1,
+        nrow(train_data)
+      )
+
+  }
+
+  ##########################################################
+  ########### Design matrices ##############################
+  ##########################################################
+
+  x_train <-
+    select(
+      train_data,
+      -all_of(response_col),
+      -all_of(exclude_columns)
+    )
+
+  y_train <-
+    train_data[[response_col]]
+
+  x_test <-
+    select(
+      test_data,
+      -all_of(response_col),
+      -all_of(exclude_columns)
+    )
+
+  y_test <-
+    test_data[[response_col]]
+
+  if(exists("factor_columns") &&
+     length(factor_columns)>0){
+
+    x_train_matrix <-
+      model.matrix(
+        ~.-1,
+        data=x_train,
+        contrasts.arg=contrasts_list
+      )
+
+    x_test_matrix <-
+      model.matrix(
+        ~.-1,
+        data=x_test,
+        contrasts.arg=contrasts_list
+      )
+
+  }else{
+
+    x_train_matrix <-
+      model.matrix(
+        ~.-1,
+        data=x_train
+      )
+
+    x_test_matrix <-
+      model.matrix(
+        ~.-1,
+        data=x_test
+      )
+
+  }
+
+  predictor_names <-
+    colnames(
+      x_train_matrix
+    )
+
+  ##########################################################
+  ################ Baseline model ##########################
+  ##########################################################
+
+  baseline_matrix <-
+    x_train_matrix[
+      ,
+      columns_predictors_x
+    ]
+
+  baseline_cvfit <-
+    cv.glmnet(
+
+      baseline_matrix,
+
+      y_train,
+
+      family="binomial",
+
+      alpha=0,
+
+      standardize=FALSE,
+
+      weights=sample_weights
+
+    )
+          #########################################################################################
+          #################################### TODO ###############################################
+          #########################################################################################
+  baseline_lambda <-
+    baseline_cvfit$lambda.min
+
+  baseline_model <-
+    glmnet(
+
+      baseline_matrix,
+
+      y_train,
+
+      family="binomial",
+      
+      alpha = 0,
+
+      lambda=baseline_lambda,
+
+      standardize=FALSE,
+
+      weights=sample_weights
+
+    )
+
+  baseline_predictions <-
+
+    predict(
+
+      baseline_model,
+
+      newx=x_test_matrix[
+        ,
+        columns_predictors_x
+      ],
+
+      type="response"
+
+    )
+
+  baseline_auc <-
+
+    as.numeric(
+
+      auc(
+
+        roc(
+
+          y_test,
+
+          baseline_predictions,
+
+          quiet=TRUE
+
+        )
+
+      )
+
+    )
+
+  ##########################################################
+  ########## Loop over nfolds ##############################
+  ##########################################################
+
+  for(nfolds_val in nfolds_values){
+
+
+    ########################################################
+    ########### Loop over alpha ############################
+    ########################################################
+
+    for(alpha_val in alpha_values){
+
+      penalty.factor <-
+        rep(
+          1,
+          ncol(x_train_matrix)
+        )
+
+      penalty.factor[
+        columns_predictors_x
+      ] <- 0
+      
+      
+      ########################################################
+      ################ Fit Elastic Net #######################
+      ########################################################
+
+      cvfit <-
+
+        cv.glmnet(
+
+          x_train_matrix,
+
+          y_train,
+
+          family = "binomial",
+
+          alpha = alpha_val,
+
+          nfolds = nfolds_val,
+
+          penalty.factor = penalty.factor,
+
+          standardize = FALSE,
+
+          weights = sample_weights
+
+        )
+
+      lambda_min <- cvfit$lambda.min
+
+      lambda_1se <- cvfit$lambda.1se
+      
+      ########################################################
+      ############ Store CV model ############################
+      ########################################################
+
+      cv_key <-
+
+        paste(
+
+          response_col,
+
+          alpha_val,
+
+          nfolds_val,
+
+          seed,
+
+          sep = "_"
+
+        )
+
+      cv_models[[cv_key]] <- cvfit
+
+      ########################################################
+      ################ Final model ############################
+      ########################################################
+
+      model <-
+
+        glmnet(
+
+          x_train_matrix,
+
+          y_train,
+
+          family = "binomial",
+          
+          alpha = alpha_val,
+          #########################################################################################
+          #################################### TODO ###############################################
+          #########################################################################################
+          lambda = lambda_min,
+
+          penalty.factor = penalty.factor,
+
+          standardize = FALSE,
+
+          weights = sample_weights
+
+        )
+
+      ########################################################
+      ################ Test predictions ######################
+      ########################################################
+
+      predictions <-
+
+        predict(
+
+          model,
+
+          newx = x_test_matrix,
+
+          type = "response"
+
+        )
+
+      roc_obj <-
+
+        suppressMessages(
+
+          roc(
+
+            y_test,
+
+            as.numeric(predictions)
+
+          )
+
+        )
+
+      auc_value <-
+
+        as.numeric(
+
+          auc(roc_obj)
+
+        )
+
+      delta_auc <-
+
+        auc_value -
+        baseline_auc
+
+      ########################################################
+      ######## Number of selected predictors #################
+      ########################################################
+
+      coef_vector <-
+
+        as.vector(
+
+          coef(model)
+
+        )
+
+      coef_names <-
+
+        rownames(
+
+          coef(model)
+
+        )
+
+      selected_predictors <-
+
+        sum(
+
+          coef_vector[-1] != 0
+
+        )
+
+      ########################################################
+      ######## Store model performance #######################
+      ########################################################
+
+      results_list[[length(results_list)+1]] <-
+
+        data.frame(
+
+          Seed = seed,
+
+          Response = response_col,
+
+          Alpha = alpha_val,
+
+          nfolds = nfolds_val,
+
+          Lambda_min = lambda_min,
+
+          Lambda_1se = lambda_1se,
+
+          Baseline_AUC = baseline_auc,
+
+          ElasticNet_AUC = auc_value,
+
+          Delta_AUC = delta_auc,
+
+          Selected_predictors = selected_predictors,
+
+          stringsAsFactors = FALSE
+
+        )
+      
+            ########################################################
+      ######## Store coefficients ############################
+      ########################################################
+
+      coef_df <-
+
+        data.frame(
+
+          Seed = seed,
+
+          Response = response_col,
+
+          Alpha = alpha_val,
+
+          nfolds = nfolds_val,
+
+          Variable = coef_names,
+
+          Coefficient = coef_vector,
+
+          Selected = coef_vector != 0,
+
+          stringsAsFactors = FALSE
+
+        )
+
+      coef_list[[length(coef_list)+1]] <-
+
+        coef_df
+
+      ########################################################
+      ######## Store selected variables ######################
+      ########################################################
+
+      selected_df <-
+
+        coef_df %>%
+
+        filter(
+
+          Variable != "(Intercept)",
+
+          Selected
+
+        ) %>%
+
+        transmute(
+
+          Seed,
+
+          Response,
+
+          Alpha,
+
+          nfolds,
+
+          Variable
+
+        )
+
+      selected_variables_list[[length(selected_variables_list)+1]] <-
+
+        selected_df
+      
+      
+      ########################################################
+      ############### De novo logistic refit #################
+      ########################################################
+
+      predictor_vars <-
+
+        selected_df$Variable
+
+      ########################################################
+      ######## Convert dummy variables back to factors ########
+      ########################################################
+
+      if(exists("factor_columns") &&
+        length(factor_columns) > 0){
+
+        predictor_vars <-
+
+          unique(
+
+            sapply(
+
+              predictor_vars,
+
+              function(var){
+
+                for(factor_col in factor_columns){
+
+                  if(grepl(
+
+                    paste0("^",factor_col),
+
+                    var
+
+                  )){
+
+                    return(factor_col)
+
+                  }
+
+                }
+
+                return(var)
+
+              }
+
+            )
+
+          )
+
+      }
+
+      ########################################################
+      ########### Build formulas #############################
+      ########################################################
+
+      main_predictors <-
+
+        colnames(data)[columns_predictors]
+
+      baseline_formula <-
+
+        as.formula(
+
+          paste(
+
+            response_col,
+
+            "~",
+
+            paste(
+
+              main_predictors,
+
+              collapse=" + "
+
+            )
+
+          )
+
+      )
+
+      ########################################################
+      ########### Full model formula #########################
+      ########################################################
+
+      all_predictors <-
+
+        unique(
+
+          c(
+
+            main_predictors,
+
+            predictor_vars
+
+          )
+
+        )
+
+      full_formula <-
+
+        as.formula(
+
+          paste(
+
+            response_col,
+
+            "~",
+
+            paste(
+
+              all_predictors,
+
+              collapse=" + "
+
+            )
+
+          )
+
+        )
+      
+      ########################################################
+      ################ Fit GLMs ###############################
+      ########################################################
+
+      if(use_weights){
+
+        baseline_glm <-
+
+          glm(
+
+            baseline_formula,
+
+            data=train_data,
+
+            family="binomial",
+
+            weights=sample_weights
+
+          )
+
+        full_glm <-
+
+          glm(
+
+            full_formula,
+
+            data=train_data,
+
+            family="binomial",
+
+            weights=sample_weights
+
+          )
+
+      }else{
+
+        baseline_glm <-
+
+          glm(
+
+            baseline_formula,
+
+            data=train_data,
+
+            family="binomial"
+
+          )
+
+        full_glm <-
+
+          glm(
+
+            full_formula,
+
+            data=train_data,
+
+            family="binomial"
+
+          )
+
+      }
+      
+      
+      ########################################################
+      ################ Test-set predictions ##################
+      ########################################################
+
+      baseline_predictions <-
+
+        predict(
+
+          baseline_glm,
+
+          newdata = test_data,
+
+          type = "response"
+
+        )
+
+      full_predictions <-
+
+        predict(
+
+          full_glm,
+
+          newdata = test_data,
+
+          type = "response"
+
+        )
+
+      ########################################################
+      ################ Calculate AUC ##########################
+      ########################################################
+
+      baseline_auc_glm <-
+
+        as.numeric(
+
+          auc(
+
+            roc(
+
+              test_data[[response_col]],
+
+              baseline_predictions,
+
+              quiet = TRUE
+
+            )
+
+          )
+
+        )
+
+      full_auc_glm <-
+
+        as.numeric(
+
+          auc(
+
+            roc(
+
+              test_data[[response_col]],
+
+              full_predictions,
+
+              quiet = TRUE
+
+            )
+
+          )
+
+        )
+      
+      
+      ########################################################
+######## Store refitted ROC ############################
+########################################################
+
+refit_roc_obj <-
+
+  roc(
+
+    test_data[[response_col]],
+
+    full_predictions,
+
+    quiet = TRUE
+
+  )
+
+refit_roc_storage[[
+
+  paste(
+
+    seed,
+
+    response_col,
+
+    alpha_val,
+
+    nfolds_val,
+
+    sep = "_"
+
+  )
+
+]] <-
+
+  list(
+
+    roc = refit_roc_obj,
+
+    auc = full_auc_glm,
+
+    seed = seed,
+
+    response = response_col,
+
+    alpha = alpha_val,
+
+    nfolds = nfolds_val
+
+  )
+
+      ########################################################
+      ################ Delta AUC ##############################
+      ########################################################
+
+      delta_auc_glm <-
+
+        full_auc_glm -
+
+        baseline_auc_glm
+
+      ########################################################
+      ################ Likelihood ratio test ##################
+      ########################################################
+
+      anova_result <-
+
+        anova(
+
+          baseline_glm,
+
+          full_glm,
+
+          test = "Chisq"
+
+        )
+
+      anova_p <-
+
+        if(
+
+          nrow(anova_result) >= 2
+
+        ){
+
+          anova_result$`Pr(>Chi)`[2]
+
+        }else{
+
+          NA_real_
+
+        }
+
+      ########################################################
+      ################ Net Reclassification ###################
+      ########################################################
+
+      nri_value <-
+
+        calculate_nri(
+
+          biomarker_probs = full_predictions,
+
+          baseline_probs = baseline_predictions,
+
+          actual_outcomes = test_data[[response_col]]
+
+        )
+
+      ########################################################
+      ################ Store model performance ################
+      ########################################################
+
+      refit_results_list[[
+
+        length(refit_results_list)+1
+
+      ]] <-
+
+        data.frame(
+
+          Seed = seed,
+
+          Response = response_col,
+
+          Alpha = alpha_val,
+
+          nfolds = nfolds_val,
+
+          Baseline_AUC = baseline_auc_glm,
+
+          Refit_AUC = full_auc_glm,
+
+          Delta_AUC = delta_auc_glm,
+
+          ANOVA_p = anova_p,
+
+          NRI = nri_value,
+
+          Number_predictors =
+
+          length(
+
+          setdiff(
+
+          all_predictors,
+
+          main_predictors
+
+          )
+
+          ),
+
+          stringsAsFactors = FALSE
+
+        )
+      
+      
+      ########################################################
+      ############ Store model coefficients ##################
+      ########################################################
+
+      tidy_model <-
+
+        broom::tidy(
+
+          full_glm
+
+        ) %>%
+
+        mutate(
+
+          OR = exp(estimate),
+
+          FDR = p.adjust(
+
+            p.value,
+
+            method = "fdr"
+
+          ),
+
+          Seed = seed,
+  
+          Response = response_col,
+
+          Alpha = alpha_val,
+
+          nfolds = nfolds_val
+
+        )
+
+      ########################################################
+      ######## Store coefficient table ########################
+      ########################################################
+
+      refit_coef_list[[
+
+        length(refit_coef_list)+1
+
+      ]] <-
+
+        tidy_model
+
+      ########################################################
+      ######## Representative ROC ############################
+      ########################################################
+
+      roc_storage[[
+
+        paste(
+
+          seed,
+
+          response_col,
+
+          alpha_val,
+
+          nfolds_val,
+
+          sep = "_"
+
+        )
+
+      ]] <-
+
+        list(
+
+          roc = roc_obj,
+
+          auc = auc_value,
+
+          seed = seed,
+
+          response = response_col,
+
+          alpha = alpha_val,
+
+          nfolds = nfolds_val
+
+        )
+
+      ########################################################
+      ######## Optional progress message #####################
+      ########################################################
+
+    }   # end alpha loop
+
+  }   # end nfolds loop
+
+}   # end seed loop
+
+}, warning = capture_warning)
+      
+      
+      
+############################################################
+################ Combine all results ########################
+############################################################
+
+results <-
+
+  bind_rows(results_list)
+
+coefficients_df <-
+
+  bind_rows(coef_list)
+
+selected_variables <-
+
+  bind_rows(selected_variables_list)
+
+
+############################################################
+############### Variable selection frequency ###############
+############################################################
+
+
+selection_frequency <-
+
+selected_variables %>%
+
+group_by(
+
+    Response,
+
+    Alpha,
+
+    nfolds,
+
+    Variable
+
+) %>%
+
+summarise(
+
+    Selection_frequency =
+
+        100 * n()/n_seeds,
+
+    .groups="drop"
+
+)
+
+
+############################################################
+############ Combine de novo refitting results #############
+############################################################
+
+refit_results <-
+
+  bind_rows(
+
+    refit_results_list
+
+  )
+
+refit_coefficients <-
+
+  bind_rows(
+
+    refit_coef_list
+
+  )
+
+
+
+############################################################
+############### De novo summary ############################
+############################################################
+
+refit_summary <-
+
+  refit_results %>%
+
+  group_by(
+
+    Response,
+
+    Alpha,
+
+    nfolds
+
+  ) %>%
+
+  summarise(
+
+    Mean_Baseline_AUC =
+
+      mean(
+
+        Baseline_AUC,
+
+        na.rm = TRUE
+
+      ),
+
+    Lower95_Baseline =
+
+      quantile(
+
+        Baseline_AUC,
+
+        0.025,
+
+        na.rm = TRUE
+
+      ),
+
+    Upper95_Baseline =
+
+      quantile(
+
+        Baseline_AUC,
+
+        0.975,
+
+        na.rm = TRUE
+
+      ),
+
+    Mean_Refit_AUC =
+
+      mean(
+
+        Refit_AUC,
+
+        na.rm = TRUE
+
+      ),
+
+    Lower95_Refit =
+
+      quantile(
+
+        Refit_AUC,
+
+        0.025,
+
+        na.rm = TRUE
+
+      ),
+
+    Upper95_Refit =
+
+      quantile(
+
+        Refit_AUC,
+
+        0.975,
+
+        na.rm = TRUE
+
+      ),
+
+    Mean_Delta_AUC =
+
+      mean(
+
+        Delta_AUC,
+
+        na.rm = TRUE
+
+      ),
+    
+    Lower95_Delta =
+
+  quantile(
+
+    Delta_AUC,
+
+    0.025,
+
+    na.rm = TRUE
+
+  ),
+
+Upper95_Delta =
+
+  quantile(
+
+    Delta_AUC,
+
+    0.975,
+
+    na.rm = TRUE
+
+  ),
+
+    Significant_ANOVA =
+
+      mean(
+
+        !is.na(ANOVA_p) & ANOVA_p < 0.05
+
+      ) * 100,
+
+    Mean_NRI =
+
+      mean(
+
+        NRI,
+
+        na.rm = TRUE
+
+      ),
+    
+    Lower95_NRI =
+
+      quantile(
+
+        NRI,
+
+        0.025,
+
+        na.rm = TRUE
+
+      ),
+
+    Upper95_NRI =
+
+      quantile(
+
+        NRI,
+
+        0.975,
+
+        na.rm = TRUE
+
+      ),
+
+    Mean_Selected =
+
+      mean(
+
+        Number_predictors,
+
+        na.rm = TRUE
+
+      ),
+
+SD_Selected =
+
+  sd(
+
+    Number_predictors,
+
+    na.rm = TRUE
+
+  ),
+
+    .groups = "drop"
+
+  ) %>%
+
+  arrange(
+
+    desc(
+
+      Mean_Refit_AUC
+
+    ),
+
+    desc(
+
+      Mean_Delta_AUC
+
+    )
+
+  )
+
+
+
+
+
+
+
+
+refit_coefficients_summary <-
+
+  refit_coefficients %>%
+
+  group_by(
+
+    Response,
+
+    Alpha,
+
+    nfolds,
+
+    term
+
+  ) %>%
+
+  summarise(
+
+    Mean_Beta = mean(estimate, na.rm = TRUE),
+
+    SD_Beta = sd(estimate, na.rm = TRUE),
+
+    Mean_OR = exp(mean(estimate, na.rm = TRUE)),
+
+    Lower95_OR = exp(
+      quantile(
+        estimate,
+        0.025,
+        na.rm = TRUE
+      )
+    ),
+
+    Upper95_OR = exp(
+      quantile(
+        estimate,
+        0.975,
+        na.rm = TRUE
+      )
+    ),
+
+    Median_p = median(
+      p.value,
+      na.rm = TRUE
+    ),
+
+    Mean_FDR = mean(
+      FDR,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+
+  )
+
+
+
+
+############################################################
+################ Performance summary ########################
+############################################################
+
+summary_results <-
+
+results %>%
+
+group_by(
+
+  Response,
+
+  Alpha,
+
+  nfolds
+
+) %>%
+
+summarise(
+
+  Mean_AUC =
+
+    mean(
+      ElasticNet_AUC,
+      na.rm = TRUE
+    ),
+
+  Lower95_AUC =
+
+    quantile(
+      ElasticNet_AUC,
+      0.025,
+      na.rm = TRUE
+    ),
+
+  Upper95_AUC =
+
+    quantile(
+      ElasticNet_AUC,
+      0.975,
+      na.rm = TRUE
+    ),
+
+  Mean_Baseline_AUC =
+
+    mean(
+      Baseline_AUC,
+      na.rm = TRUE
+    ),
+
+  Lower95_Baseline =
+
+    quantile(
+      Baseline_AUC,
+      0.025,
+      na.rm = TRUE
+    ),
+
+  Upper95_Baseline =
+
+    quantile(
+      Baseline_AUC,
+      0.975,
+      na.rm = TRUE
+    ),
+
+  Mean_Delta_AUC =
+
+    mean(
+      Delta_AUC,
+      na.rm = TRUE
+    ),
+
+  Lower95_Delta =
+
+    quantile(
+      Delta_AUC,
+      0.025,
+      na.rm = TRUE
+    ),
+
+  Upper95_Delta =
+
+    quantile(
+      Delta_AUC,
+      0.975,
+      na.rm = TRUE
+    ),
+
+  Mean_Lambda_min =
+
+    mean(
+      Lambda_min,
+      na.rm = TRUE
+    ),
+
+  SD_Lambda_min =
+
+    sd(
+      Lambda_min,
+      na.rm = TRUE
+    ),
+
+  Mean_Lambda_1se =
+
+    mean(
+      Lambda_1se,
+      na.rm = TRUE
+    ),
+
+  SD_Lambda_1se =
+
+    sd(
+      Lambda_1se,
+      na.rm = TRUE
+    ),
+
+  Mean_Selected =
+
+    mean(
+      Selected_predictors,
+      na.rm = TRUE
+    ),
+
+  SD_Selected =
+
+    sd(
+      Selected_predictors,
+      na.rm = TRUE
+    ),
+
+  .groups = "drop"
+
+)
+
+############################################################
+################ Sort models ###############################
+############################################################
+
+summary_results <-
+
+summary_results %>%
+
+arrange(
+
+  desc(Mean_AUC),
+
+  desc(Mean_Delta_AUC),
+
+  Mean_Selected
+
+)
+
+
+
+############################################################
+################ Display warnings ##########################
+############################################################
+
+warnings <- unique(warnings)
+
+if (length(warnings) > 0) {
+
+  cat(
+    '<details><summary style="font-size:1.2em;"><strong>',
+    length(warnings),
+    ' unique warning(s) encountered during the analysis',
+    '</strong></summary>'
+  )
+
+  cat('<div style="margin-left:20px;margin-top:10px;">')
+
+  for(warn in warnings){
+
+    cat("<p>", warn, "</p>")
+
+  }
+
+  cat("</div></details><br>")
+
+} else {
+
+  cat(
+    "No warnings were encountered during the analysis.<br>"
+  )
+
+}
+
+
+```
+
+
+
+## Obtaining the optimal lambda and the R2 (performance) of each regression model under different alpha values in elastic net
+
+Here is shown the previously described performance of the model generated by machine learning, as well as the performance of the "machine learning basemodel". 
+
+```{r results='asis'}
+
+############################################################
+################ Elastic Net summary tables ################
+############################################################
+
+library(knitr)
+library(kableExtra)
+library(writexl)
+library(dplyr)
+
+dir.create(
+  "Machine Learning Models comparison and summary",
+  showWarnings = FALSE
+)
+
+############################################################
+################ Loop over responses ########################
+############################################################
+
+for(response_col in unique(summary_results$Response)){
+
+  ##########################################################
+  ################ Response collapsible #####################
+  ##########################################################
+
+  cat(paste0(
+    '<div class="panel panel-default">',
+    '<div class="panel-heading">',
+    '<h4 class="panel-title">',
+    '<a data-toggle="collapse" href="#',
+    response_col,
+    '">',
+    'Elastic Net Results for Response: ',
+    response_col,
+    '</a>',
+    '</h4>',
+    '</div>',
+    '<div id="',
+    response_col,
+    '" class="panel-collapse collapse">',
+    '<div class="panel-body">'
+  ))
+
+  ##########################################################
+  ################ Loop over nfolds #########################
+  ##########################################################
+
+  for(nfolds_val in sort(unique(summary_results$nfolds))){
+
+    ########################################################
+    ################ Inner collapsible #####################
+    ########################################################
+
+    cat(paste0(
+      '<div class="panel panel-default">',
+      '<div class="panel-heading">',
+      '<h5 class="panel-title">',
+      '<a data-toggle="collapse" href="#',
+      response_col,
+      "_",
+      nfolds_val,
+      '">',
+      'Results for nfolds = ',
+      nfolds_val,
+      '</a>',
+      '</h5>',
+      '</div>',
+      '<div id="',
+      response_col,
+      "_",
+      nfolds_val,
+      '" class="panel-collapse collapse">',
+      '<div class="panel-body">'
+    ))
+
+    ########################################################
+    ################ Summary table ##########################
+    ########################################################
+
+    response_summary <-
+
+      summary_results %>%
+
+      filter(
+
+        Response == response_col,
+
+        nfolds == nfolds_val
+
+      )
+
+    summary_file <-
+
+      paste0(
+
+        "Machine Learning Models comparison and summary/",
+
+        response_col,
+
+        "_nfolds_",
+
+        nfolds_val,
+
+        "_ElasticNet_summary.xlsx"
+
+      )
+
+    write_xlsx(
+
+      response_summary,
+
+      summary_file
+
+    )
+
+    cat(paste0(
+      '<a href="',
+      summary_file,
+      '" download>Download Elastic Net summary as Excel</a><br><br>'
+    ))
+    
+    ########################################################
+############ HTML version of summary table #############
+########################################################
+
+response_summary_html <-
+
+  response_summary %>%
+
+  mutate(
+
+    AUC = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_AUC,
+      Lower95_AUC,
+      Upper95_AUC
+    ),
+
+    Baseline_AUC = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_Baseline_AUC,
+      Lower95_Baseline,
+      Upper95_Baseline
+    ),
+
+    Delta_AUC = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_Delta_AUC,
+      Lower95_Delta,
+      Upper95_Delta
+    ),
+
+    Lambda_min = sprintf(
+      "%.3f ± %.3f",
+      Mean_Lambda_min,
+      SD_Lambda_min
+    ),
+
+    Lambda_1se = sprintf(
+      "%.3f ± %.3f",
+      Mean_Lambda_1se,
+      SD_Lambda_1se
+    ),
+
+    Selected_predictors = sprintf(
+      "%.2f ± %.2f",
+      Mean_Selected,
+      SD_Selected
+    )
+
+  ) %>%
+
+  select(
+
+    Response,
+    Alpha,
+    nfolds,
+    AUC,
+    Baseline_AUC,
+    Delta_AUC,
+    Lambda_min,
+    Lambda_1se,
+    Selected_predictors
+
+  )
+
+    kable(
+
+      response_summary_html,
+
+      format = "html",
+
+      digits = 3,
+
+      caption = paste(
+
+        "Elastic Net performance summary for",
+
+        response_col,
+
+        "(nfolds =",
+
+        nfolds_val,
+
+        ")"
+
+      ),
+
+      align = "c"
+
+    ) %>%
+
+      kable_styling(
+
+        bootstrap_options = c(
+
+          "striped",
+
+          "hover",
+
+          "condensed",
+
+          "responsive"
+
+        ),
+
+        full_width = FALSE,
+
+        position = "center"
+
+      ) %>%
+
+      row_spec(
+
+        0,
+
+        bold = TRUE,
+
+        color = "white",
+
+        background = "black"
+
+      ) %>%
+
+      print()
+
+
+    ########################################################
+    ################ De novo summary ########################
+    ########################################################
+
+    refit_table <-
+
+      refit_summary %>%
+
+      filter(
+
+        Response == response_col,
+
+        nfolds == nfolds_val
+
+      )
+
+    refit_file <-
+
+      paste0(
+
+        "Machine Learning Models comparison and summary/",
+
+        response_col,
+
+        "_nfolds_",
+
+        nfolds_val,
+
+        "_Refitted_model_summary.xlsx"
+
+      )
+
+    write_xlsx(
+
+      refit_table,
+
+      refit_file
+
+    )
+
+    cat(paste0(
+      '<br><a href="',
+      refit_file,
+      '" download>Download Refitted Model Summary as Excel</a><br><br>'
+    ))
+    
+    refit_table_html <-
+
+  refit_table %>%
+
+  mutate(
+
+    Baseline_AUC = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_Baseline_AUC,
+      Lower95_Baseline,
+      Upper95_Baseline
+    ),
+
+    Refit_AUC = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_Refit_AUC,
+      Lower95_Refit,
+      Upper95_Refit
+    ),
+
+    Delta_AUC = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_Delta_AUC,
+      Lower95_Delta,
+      Upper95_Delta
+    ),
+
+    NRI = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_NRI,
+      Lower95_NRI,
+      Upper95_NRI
+    ),
+
+    Significant_ANOVA = sprintf(
+      "%.0f%%",
+      Significant_ANOVA
+    ),
+
+    Selected_predictors = sprintf(
+      "%.2f ± %.2f",
+      Mean_Selected,
+      SD_Selected
+    )
+
+  ) %>%
+
+  select(
+
+    Response,
+    Alpha,
+    nfolds,
+    Baseline_AUC,
+    Refit_AUC,
+    Delta_AUC,
+    Significant_ANOVA,
+    NRI,
+    Selected_predictors
+
+  )
+
+    kable(
+
+      refit_table_html,
+
+      format = "html",
+
+      digits = 3,
+
+      caption = paste(
+
+        "Refitted logistic model performance summary for",
+
+        response_col,
+
+        "(nfolds =",
+
+        nfolds_val,
+
+        ")"
+
+      ),
+
+      align = "c"
+
+    ) %>%
+
+      kable_styling(
+
+        bootstrap_options = c(
+
+          "striped",
+
+          "hover",
+
+          "condensed",
+
+          "responsive"
+
+        ),
+
+        full_width = FALSE,
+
+        position = "center"
+
+      ) %>%
+
+      row_spec(
+
+        0,
+
+        bold = TRUE,
+
+        color = "white",
+
+        background = "black"
+
+      ) %>%
+
+      print()
+    
+    
+    
+    
+    ########################################################
+    ############ Refitted coefficient summary ##############
+    ########################################################
+
+    coef_summary <-
+
+      refit_coefficients_summary %>%
+
+      filter(
+
+        Response == response_col,
+
+        nfolds == nfolds_val
+
+      ) %>%
+  
+      left_join(
+
+        selection_frequency %>%
+
+          rename(term = Variable) %>%
+
+          select(
+            Response,
+            Alpha,
+            nfolds,
+            term,
+            Selection_frequency
+          ),
+
+        by = c(
+          "Response",
+          "Alpha",
+          "nfolds",
+          "term"
+        )
+
+      ) %>%
+
+      mutate(
+
+        Selection_frequency =
+          ifelse(term == "(Intercept)",
+                NA,
+                Selection_frequency),
+
+        Beta = ifelse(
+
+          is.finite(Mean_Beta) & is.finite(SD_Beta),
+
+          sprintf("%.3f \u00b1 %.3f", Mean_Beta, SD_Beta),
+
+          "—"
+
+        ),
+
+OR = ifelse(
+
+  is.finite(Mean_OR),
+
+  sprintf(
+    "%.3f (%.3f–%.3f)",
+    Mean_OR,
+    Lower95_OR,
+    Upper95_OR
+  ),
+
+  "—"
+
+),
+
+        Median_p = round(Median_p, 4),
+
+        Mean_FDR = round(Mean_FDR, 4)
+
+      ) %>%
+
+      relocate(
+
+        Selection_frequency,
+
+        .after = term
+
+      ) %>%
+      
+      rename(
+
+  Predictor = term,
+
+  `Selection (%)` = Selection_frequency,
+
+  `β ± SD` = Beta,
+
+  `Odds Ratio` = OR,
+
+  `Median p` = Median_p,
+
+  `Mean FDR` = Mean_FDR
+
+) %>%
+
+      select(
+
+        Response,
+        Alpha,
+        nfolds,
+        Predictor,
+        `Selection (%)`,
+        `β ± SD`,
+        `Odds Ratio`,
+        `Median p`,
+        `Mean FDR`
+
+      ) %>%
+
+      arrange(
+
+        Alpha,
+
+        desc(`Selection (%)`),
+
+        Predictor
+  
+      )
+    
+    
+      
+    coef_file <-
+
+      paste0(
+
+        "Machine Learning Models comparison and summary/",
+
+        response_col,
+
+        "_nfolds_",
+
+        nfolds_val,
+
+        "_Refitted_coefficients_summary.xlsx"
+
+      )
+
+    write_xlsx(
+
+      coef_summary,
+
+      coef_file
+
+    )
+
+    cat(paste0(
+      '<br><a href="',
+      coef_file,
+      '" download>Download Refitted Coefficient Summary as Excel</a><br><br>'
+    ))
+
+    kable(
+
+      coef_summary,
+
+      format = "html",
+
+      digits = 3,
+
+      caption = paste(
+
+        "Refitted logistic model coefficient summary for",
+
+        response_col,
+
+        "(nfolds =",
+
+        nfolds_val,
+
+        ")"
+
+      ),
+
+      align = "c"
+
+    ) %>%
+
+      kable_styling(
+
+        bootstrap_options = c(
+
+          "striped",
+
+          "hover",
+
+          "condensed",
+
+          "responsive"
+
+        ),
+
+        full_width = FALSE,
+
+        position = "center"
+
+      ) %>%
+
+      row_spec(
+
+        0,
+
+        bold = TRUE,
+
+        color = "white",
+
+        background = "black"
+
+      ) %>%
+
+      print()
+
+    ########################################################
+    ################ Close nfolds panel #####################
+    ########################################################
+
+    cat("</div></div></div><br>")
+
+  }
+
+  ##########################################################
+  ################ Close response panel #####################
+  ##########################################################
+
+  cat("</div></div></div><br>")
+
+}
+
+
+
+
+
+
+
+
+
+```
+
+
+
+
+
+
+## Obtaining all the non-zero coefficients of the predictors chosen by elastic net for each alpha value and refitting the regression model de-novo using those predictors. 
+
+A regression model will be generated de-novo with the standard regression, using the predictors with non-zero coefficients, in a process called refitting of the model. That de-novo model or refitted model will be compared by ANOVA with the baseline model generated with the standard regression. These models are different from the previous ones as they are generated with the typical regression instead of with elastic net ML, and now the machine learning algorithm is not used to perform predictions to obtain the performance of the models. If elastic net did not select any candidate biomarkeer, the de-novo (refitted) regression model = baseline model, so ANOVA p-value = NA and performance (R2 for linear regression) of baseline model and de-novo generated (refitted) model will be the same.
+
+The first table will show the coefficients of the candidate biomarkers chosen within our omics data by elastic net as a suitable predictor of the response variables. The coefficients of predictors selected with the penalty.factor will always appear, and correspond to the predictors of the baseline model. Only when elastic net selects candidate biomarkers from our omics data, their coefficients will be also shown. 
+
+The second table will show the estimates of those predictors after being used in a refitted model using the standard regression algorithm, not the machine learning one, and that is why significance of those predictors (p-values) can also be shown.
+
+```{r results='asis'}
+
+
+############################################################
+############ Representative Elastic Net models #############
+############################################################
+
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(writexl)
+
+dir.create(
+  "Representative Elastic Net Models",
+  showWarnings = FALSE
+)
+
+############################################################
+############ Identify representative models ################
+############################################################
+
+representative_models <-
+
+  refit_results %>%
+
+  group_by(
+
+    Response,
+
+    Alpha,
+
+    nfolds
+
+  ) %>%
+
+  mutate(
+
+    Mean_Refit_AUC = mean(
+      Refit_AUC,
+      na.rm = TRUE
+    ),
+
+    Distance =
+      abs(
+        Refit_AUC -
+        Mean_Refit_AUC
+      )
+
+  ) %>%
+
+  arrange(
+    Distance,
+    .by_group = TRUE
+  ) %>%
+
+  slice_head(n = 2) %>%
+
+  ungroup()
+
+############################################################
+################ Loop over responses #######################
+############################################################
+
+for(response_col in unique(representative_models$Response)){
+
+cat(paste0(
+'<div class="panel panel-default">',
+'<div class="panel-heading">',
+'<h4 class="panel-title">',
+'<a data-toggle="collapse" href="#Representative_',response_col,'">',
+'Representative models for Response: ',response_col,
+'</a>',
+'</h4>',
+'</div>',
+'<div id="Representative_',response_col,'" class="panel-collapse collapse">',
+'<div class="panel-body">'
+))
+
+############################################################
+################ Loop over nfolds ##########################
+############################################################
+
+for(nfolds_val in sort(unique(representative_models$nfolds))){
+
+cat(paste0(
+'<div class="panel panel-default">',
+'<div class="panel-heading">',
+'<h5 class="panel-title">',
+'<a data-toggle="collapse" href="#Representative_',
+response_col,'_',nfolds_val,'">',
+'nfolds = ',nfolds_val,
+'</a>',
+'</h5>',
+'</div>',
+'<div id="Representative_',response_col,'_',nfolds_val,
+'" class="panel-collapse collapse">',
+'<div class="panel-body">'
+))
+
+############################################################
+################ Loop over alpha ###########################
+############################################################
+
+for(alpha_val in sort(unique(representative_models$Alpha))){
+
+cat(paste0(
+'<details><summary><strong>Alpha = ',
+alpha_val,
+'</strong></summary><br>'
+))
+
+rep_models <-
+
+representative_models %>%
+
+filter(
+
+Response==response_col,
+
+nfolds==nfolds_val,
+
+Alpha==alpha_val
+
+)
+
+if(nrow(rep_models)==0){
+
+cat("No representative models found.<br><br>")
+
+}else{
+
+##########################################################
+############ Loop over representative seeds ###############
+##########################################################
+
+for(i in seq_len(nrow(rep_models))){
+
+this_seed <- rep_models$Seed[i]
+
+cat(paste0(
+"<h4>Representative model ",
+i,
+" (Seed ",
+this_seed,
+")</h4>"
+))
+
+cat(paste0(
+"<b>Refitted AUC:</b> ",
+round(rep_models$Refit_AUC[i],3),
+"<br>"
+))
+
+cat(paste0(
+"<b>Mean refitted AUC:</b> ",
+round(rep_models$Mean_Refit_AUC[i],3),
+"<br>"
+))
+
+cat(paste0(
+"<b>Distance from mean:</b> ",
+round(rep_models$Distance[i],5),
+"<br><br>"
+))
+
+
+
+##########################################################
+############ Cross-validation plot ########################
+##########################################################
+
+cv_key <-
+
+  paste(
+
+    response_col,
+
+    alpha_val,
+
+    nfolds_val,
+
+    this_seed,
+
+    sep = "_"
+
+  )
+
+cvfit <- cv_models[[cv_key]]
+
+if(!is.null(cvfit)){
+
+  op <- par(no.readonly = TRUE)
+
+  par(
+
+  mar = c(5, 5, 5.5, 2),   # plot margins
+  oma = c(0, 0, 0, 0)      # extra outer top margin
+
+  )
+
+  plot(cvfit)
+
+  title(
+
+    main = paste(
+
+      "Elastic Net Cross-validation Plot",
+      
+      cex.main = 1.0
+
+    )
+
+  )
+
+  par(op)
+
+}else{
+
+  cat(
+
+    "<b>Cross-validation plot not available.</b><br><br>"
+
+  )
+
+}
+
+cat("<br>")
+
+
+
+##########################################################
+############ Refitted ROC curve ###########################
+##########################################################
+
+roc_key <-
+
+  paste(
+
+    this_seed,
+
+    response_col,
+
+    alpha_val,
+
+    nfolds_val,
+
+    sep = "_"
+
+  )
+
+roc_info <- refit_roc_storage[[roc_key]]
+
+if(!is.null(roc_info)){
+
+  plot(
+
+    roc_info$roc,
+
+    legacy.axes = TRUE,
+
+    lwd = 2,
+
+    main = paste(
+
+      "Refitted logistic regression ROC",
+
+      "\nSeed =", this_seed,
+
+      "| AUC =", round(roc_info$auc, 3)
+
+    )
+
+  )
+
+  abline(
+    0,
+    1,
+    lty = 2,
+    col = "grey60"
+  )
+
+}
+
+##########################################################
+######## Elastic Net coefficient table ####################
+##########################################################
+
+elastic_table <-
+
+coefficients_df %>%
+
+filter(
+
+Seed==this_seed,
+
+Response==response_col,
+
+Alpha==alpha_val,
+
+nfolds==nfolds_val,
+
+Coefficient!=0
+
+)
+
+elastic_file <-
+
+paste0(
+
+"Representative Elastic Net Models/",
+
+response_col,
+
+"_nfolds_",
+
+nfolds_val,
+
+"_alpha_",
+
+alpha_val,
+
+"_seed_",
+
+this_seed,
+
+"_ElasticNet.xlsx"
+
+)
+
+write_xlsx(
+
+elastic_table,
+
+elastic_file
+
+)
+
+cat(paste0(
+'<a href="',
+elastic_file,
+'" download>Download Elastic Net coefficients (Seed ',
+this_seed,
+')</a><br><br>'
+))
+
+kable(
+
+elastic_table,
+
+format="html",
+
+digits=3,
+
+caption=paste(
+
+"Elastic Net coefficients (Seed",
+
+this_seed,")"
+
+),
+
+align="c"
+
+) %>%
+
+kable_styling(
+
+bootstrap_options=c(
+
+"striped",
+
+"hover",
+
+"condensed",
+
+"responsive"
+
+),
+
+full_width=FALSE,
+
+position="center"
+
+) %>%
+
+row_spec(
+
+0,
+
+bold=TRUE,
+
+color="white",
+
+background="black"
+
+) %>%
+
+print()
+
+##########################################################
+######## Refitted logistic coefficient table ##############
+##########################################################
+
+refit_table <-
+
+refit_coefficients %>%
+
+filter(
+
+Seed==this_seed,
+
+Response==response_col,
+
+Alpha==alpha_val,
+
+nfolds==nfolds_val
+
+)
+
+refit_file <-
+
+paste0(
+
+"Representative Elastic Net Models/",
+
+response_col,
+
+"_nfolds_",
+
+nfolds_val,
+
+"_alpha_",
+
+alpha_val,
+
+"_seed_",
+
+this_seed,
+
+"_Refitted.xlsx"
+
+)
+
+write_xlsx(
+
+refit_table,
+
+refit_file
+
+)
+
+cat(paste0(
+'<a href="',
+refit_file,
+'" download>Download Refitted Logistic Model (Seed ',
+this_seed,
+')</a><br><br>'
+))
+
+kable(
+
+refit_table,
+
+format="html",
+
+digits=3,
+
+caption=paste(
+
+"Refitted logistic regression (Seed",
+
+this_seed,")"
+
+),
+
+align="c"
+
+) %>%
+
+kable_styling(
+
+bootstrap_options=c(
+
+"striped",
+
+"hover",
+
+"condensed",
+
+"responsive"
+
+),
+
+full_width=FALSE,
+
+position="center"
+
+) %>%
+
+row_spec(
+
+0,
+
+bold=TRUE,
+
+color="white",
+
+background="black"
+
+) %>%
+
+print()
+
+cat("<hr>")
+
+}
+
+}
+
+cat("</details><br>")
+
+}
+
+cat("</div></div></div><br>")
+
+}
+
+cat("</div></div></div><br>")
+
+}
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

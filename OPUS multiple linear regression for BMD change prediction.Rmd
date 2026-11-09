@@ -1,0 +1,5904 @@
+---
+title: "OPUS Multiple Linear Regression BMD Change"
+author: "David Carro Vazquez"
+date: "2/27/2024"
+output: 
+  html_document:
+    toc: true               # Enable Table of Contents
+    toc_depth: 2            # Set depth of sections in TOC
+    toc_float: true         # Make the TOC float on the side
+---
+
+
+
+```{r}
+
+# Load Bootstrap's JavaScript for collapsible panels
+cat('<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>')
+cat('<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"></script>')
+
+
+
+```
+
+Values to control:
+
+n_seeds <- 3
+
+alpha_values <- seq(0.05,0.1,0.05)
+
+nfolds_values <- c(3)
+
+baseline_lambda <-
+  baseline_cvfit$lambda.1se
+
+lambda = lambda_1se
+
+```{r setup, include=FALSE}
+
+# Set chunk options and define CRAN repository
+knitr::opts_chunk$set(echo = TRUE)
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+
+
+# Load Bootstrap's JavaScript for collapsible panels
+cat('<script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>')
+cat('<script src="https://maxcdn.bootstrapcdn.com/bootstrap/3.4.1/js/bootstrap.min.js"></script>')
+
+```
+
+
+
+
+## Data Loading
+
+
+```{r}
+
+# Load all required libraries in one chunk for global availability
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(readxl)
+library(writexl)
+library(lmtest)
+library(ggplot2)
+
+
+# Load data and process
+data1 <- read_excel("C:/Users/75118/Desktop/OPUS data for machine learning/multiple linear regression BMD change/results/results only miRs/final datafile for machine learning_miR_ratio_norm_full data - LumbarBMD_change - PrevFx.xlsx")
+
+# Remove unwanted columns and omit missing values
+data <- data1[, -1, drop = FALSE]
+data <- na.omit(data)
+
+data
+
+# Defdata# Define necessary column indices here
+# All indices refer to the dataset AFTER removing the first column.
+
+columns_omics <- 10       # First column containing candidate biomarkers
+columns_nonomics <- 9    # Last column containing non-omics data
+
+columns_categoric <- 2   # Categorical predictors; use integer(0) if none
+
+columns_response <- 9    # Continuous response variable(s)
+columns_predictors <- 1:8 # Mandatory predictors
+
+# Define expanded design-matrix indices later, after factor conversion.
+# This avoids assuming how many dummy columns categorical predictors create.
+columns_predictors_x <- NULL
+
+
+# Define response and predictor columns based on data
+response_cols <- colnames(data)[columns_response]
+predictor_cols_base <- colnames(data)[columns_predictors]
+
+
+# Check that responses are numeric and continuous
+for (response_col in response_cols) {
+
+  if (!is.numeric(data[[response_col]])) {
+    stop(
+      "The response variable must be numeric for linear regression: ",
+      response_col
+    )
+  }
+
+  if (any(!is.finite(data[[response_col]]))) {
+    stop(
+      "The response variable contains non-finite values: ",
+      response_col
+    )
+  }
+
+  if (length(unique(data[[response_col]])) < 3) {
+    stop(
+      "The response variable is constant or binary; ",
+      "a continuous outcome is expected: ",
+      response_col
+    )
+  }
+}
+
+
+# No class balancing is required for a continuous outcome.
+# Keep this function name for compatibility with subsequent chunks.
+# It returns all training observations without undersampling.
+
+balance_data <- function(df, response_col) {
+  return(df)
+}
+
+
+# Equal observation weights for ordinary linear regression.
+# No binary-class or outcome-frequency weighting is applied.
+
+compute_case_weights <- function(df, response_col) {
+  return(rep(1, nrow(df)))
+}
+
+
+# Use ordinary, unweighted linear regression.
+# If subsequent code calls balance_data(), all training rows are retained.
+use_weights <- FALSE
+
+
+
+```
+
+
+## Adjusting Data 
+
+```{r}
+# ==================> TODO: ADD 1ST COLUMN WITH OMICS DATA HERE <==================
+
+
+# Identify columns with all zero values in columns 11 to 15546
+cols_to_remove <- sapply(data[, columns_omics:ncol(data)], function(col) all(col == 0)) 
+
+
+
+# ==================> TODO: ADD LAST COLUMN WITH NON-OMICS DATA HERE <==================
+
+
+# Remove columns with all zero values from data
+data <- data[, c(1:columns_nonomics, which(!cols_to_remove) + columns_nonomics)]
+
+
+
+# ==================> TODO: ADD 1ST COLUMN WITH OMICS DATA HERE <==================
+
+
+# Verify if any columns with all zero values are still present
+cols_with_all_zeros <- sapply(data[, columns_omics:ncol(data)], function(col) all(col == 0))
+
+
+
+zero_columns <- names(data)[which(cols_with_all_zeros)]
+
+# Output results
+if (length(zero_columns) == 0) {
+  cat("All zero-only columns have been removed successfully.\n")
+} else {
+  cat("Columns with all zero values still present:\n")
+  print(zero_columns)
+}
+
+# Display the dimensions of the cleaned data
+cat("Final dimensions of data:", dim(data), "\n")
+
+
+
+
+```
+
+
+
+
+## Using a categorical variable as a factor (if there is any in our data)
+
+
+```{r}
+
+
+# ==================> TODO: ADD COLUMNS WITH CATEGORICAL DATA HERE <==================
+
+
+# Convert the third column to a factor
+data[ , columns_categoric] <- lapply(data[ , columns_categoric], as.factor)
+
+
+
+
+# ==================> TODO: ADD COLUMNS WITH CATEGORICAL DATA HERE <==================
+
+
+# Define the factorized column 
+factor_columns <- colnames(data)[columns_categoric]  # We will use this for machine learning at the end of the pipeline
+
+
+
+
+
+# Create the contrasts list, handling both single and multiple factor columns
+contrasts_list <- lapply(setNames(factor_columns, factor_columns), function(col) contrasts(data[[col]], contrasts = FALSE))
+
+```
+
+
+
+## Data Scaling
+
+
+```{r}
+
+
+# ==================> TODO: ADD 1ST COLUMN WITH OMICS DATA HERE <==================
+
+
+# Scale the omics data 
+scaled_biomarker_data <- scale(data[, columns_omics:ncol(data)])
+
+
+# ==================> TODO: ADD 1ST COLUMN WITH OMICS DATA HERE <==================
+
+
+# Update the dataset with the scaled miRNA data
+data[, columns_omics:ncol(data)] <- scaled_biomarker_data
+
+```
+
+## Scaling of adjustment-normalization biomarker (if any)
+
+```{r}
+# Scale the adjustment biomarker 
+scaled_adjmolecule_data <- scale(data[, 1])
+
+# Update the dataset with the scaled adjustment molecule 
+data[, 1] <- scaled_adjmolecule_data
+
+```
+
+## Data Preparation
+
+
+```{r}
+
+options(repos = c(CRAN = "https://cloud.r-project.org/"))
+
+
+# Step 1: Loading Required Libraries
+# First, ensure you have the necessary R packages installed and loaded. If not installed
+
+
+if (!require(reshape2)) {
+  install.packages("reshape2", repos = "https://cran.rstudio.com")
+  library(reshape2)
+}
+
+
+library(tidymodels)
+
+# Install kableExtra if not already installed
+if (!requireNamespace("kableExtra", quietly = TRUE)) {
+  install.packages("kableExtra")
+}
+
+# Load the package
+library(kableExtra)
+
+
+
+
+```
+
+
+```{r}
+
+
+# ==================> TODO: ADD LAST COLUMN WITH NON-OMICS DATA HERE <==================
+
+
+
+# Preparing the datasets
+data_noBiomarker <- data %>%
+  select(1:columns_nonomics)
+
+
+# ==================> TODO: ADD 1ST COLUMN WITH OMICS DATA HERE <==================
+
+
+data_Biomarker <- data %>%
+  select(columns_omics:ncol(data))
+
+```
+
+
+
+
+## For loop to individually select significant predictor biomarkers for the binomial response variables in logistic regression handling class imbalance with undersampling of the majority class
+
+AUC baseline: Performance of the logistic (binomial or multinomial) regression model without the selected biomarkers, only with the main predictors
+AUC biomakrer: Performance of the logistic (binomial or multinomial) regression model including the selected biomarker as a significant predictor of the response
+ANOVA: ANOVA of baseline model vs model with biomarker
+
+Weights Affect Model Likelihoods Differently: glm() with weights applies weighted maximum likelihood estimation, meaning the likelihood values it computes are different from an unweighted model. The anova() function expects models to be directly comparable, but weighted and unweighted models don't have likelihoods on the same scale. This makes the likelihood-ratio test invalid in some cases, leading to NA in p-values. That is why instead of comparing weighted vs. unweighted models, ensure both models, the baseline and the full model with biomarker, use weights. This makes sure anova() compares models estimated in the same way.
+
+
+Removed for loop over response_cols as they is only one which was used for the splitting of the data into training and test sets, which we used at the beginning of the code for both our individual marker selection loop and our elastic net marker selection loop!!! 
+
+```{r results='asis', warning=FALSE}
+
+
+# Load necessary libraries
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(writexl)
+library(rsample)
+library(DT)
+library(ggplot2)
+
+
+# Initialize lists to store the results
+results_list <- list()
+prediction_storage <- list()
+predictor_results <- list()
+failed_models <- list()
+
+
+# Keep a stable row identifier for reusing the same splits later
+data$row_id <- seq_len(nrow(data))
+
+
+# Create directory for Excel files if it does not exist
+dir.create(
+  "Individually Selected Predictors",
+  showWarnings = FALSE
+)
+
+
+##########################################################
+############ Linear regression helper functions ##########
+##########################################################
+
+# Safely construct formulas, including nonstandard column names
+make_linear_formula <- function(response, predictors) {
+
+  variables <- c(response, predictors)
+
+  if (any(grepl("`", variables, fixed = TRUE))) {
+    stop("Please remove backtick characters from column names.")
+  }
+
+  quote_name <- function(x) {
+    paste0("`", x, "`")
+  }
+
+  rhs <- if (length(predictors) > 0) {
+    paste(quote_name(predictors), collapse = " + ")
+  } else {
+    "1"
+  }
+
+  as.formula(
+    paste(
+      quote_name(response),
+      "~",
+      rhs
+    )
+  )
+}
+
+
+# Predictive test-set metrics
+calculate_regression_metrics <- function(actual, predicted) {
+
+  predicted <- as.numeric(predicted)
+
+  if (
+    length(actual) != length(predicted) ||
+    any(!is.finite(actual)) ||
+    any(!is.finite(predicted))
+  ) {
+    stop("Observed outcomes and predictions must be finite and aligned.")
+  }
+
+  residuals <- actual - predicted
+
+  sse <- sum(residuals^2)
+
+  sst <- sum(
+    (actual - mean(actual))^2
+  )
+
+  # Predictive R², not squared correlation.
+  # Negative values are possible.
+  test_r2 <- if (sst > 0) {
+    1 - sse / sst
+  } else {
+    NA_real_
+  }
+
+  list(
+    R2 = test_r2,
+    RMSE = sqrt(mean(residuals^2)),
+    MAE = mean(abs(residuals))
+  )
+}
+
+
+# Shapiro-Wilk is defined only for 3–5000 observations
+calculate_shapiro <- function(residuals) {
+
+  if (
+    length(residuals) < 3 ||
+    length(residuals) > 5000 ||
+    any(!is.finite(residuals)) ||
+    sd(residuals) == 0
+  ) {
+    return(NA_real_)
+  }
+
+  tryCatch(
+    shapiro.test(residuals)$p.value,
+    error = function(e) NA_real_
+  )
+}
+
+
+# Safe summary functions for potentially undefined metrics
+safe_mean <- function(x) {
+
+  x <- x[is.finite(x)]
+
+  if (length(x) == 0) {
+    return(NA_real_)
+  }
+
+  mean(x)
+}
+
+
+safe_median <- function(x) {
+
+  x <- x[is.finite(x)]
+
+  if (length(x) == 0) {
+    return(NA_real_)
+  }
+
+  median(x)
+}
+
+
+safe_sd <- function(x) {
+
+  x <- x[is.finite(x)]
+
+  if (length(x) < 2) {
+    return(NA_real_)
+  }
+
+  sd(x)
+}
+
+
+safe_quantile <- function(x, probability) {
+
+  x <- x[is.finite(x)]
+
+  if (length(x) == 0) {
+    return(NA_real_)
+  }
+
+  unname(
+    quantile(
+      x,
+      probs = probability
+    )
+  )
+}
+
+
+##########################################################
+######################## TODO ############################
+##########################################################
+
+###############################
+##### Robustness threshold ####
+###############################
+
+n_seeds <- 50
+
+min_frequency <- ceiling(0.80 * n_seeds)
+
+# Preserve the thresholds from your logistic code
+individual_p_threshold <- 0.10
+
+predictor_p_threshold <- 0.05
+
+
+##########################################################
+############ Define response and biomarkers ##############
+##########################################################
+
+# As in your logistic chunk, analyze the first specified response.
+response_col <- response_cols[[1]]
+
+predictors <- predictor_cols_base[
+  predictor_cols_base != response_col
+]
+
+# data_Biomarker was created before row_id was added.
+# Therefore row_id is not included as a candidate biomarker.
+biomarker_names <- names(data_Biomarker)
+
+if (length(biomarker_names) == 0) {
+  stop("No candidate biomarkers are available.")
+}
+
+if (
+  !all(
+    c(response_col, predictors, biomarker_names) %in% names(data)
+  )
+) {
+  stop("Some response or predictor columns are missing from data.")
+}
+
+if (
+  response_col %in% biomarker_names ||
+  length(intersect(predictors, biomarker_names)) > 0
+) {
+  stop("Response, mandatory predictors and biomarkers must not overlap.")
+}
+
+if ("Biomarker" %in% c(response_col, predictors)) {
+  stop(
+    "'Biomarker' is reserved as the temporary biomarker column name."
+  )
+}
+
+
+# Check numeric columns for non-finite values.
+# Global scale() can produce NaN for constant nonzero columns.
+analysis_columns <- unique(
+  c(response_col, predictors, biomarker_names)
+)
+
+nonfinite_columns <- analysis_columns[
+  vapply(
+    data[, analysis_columns, drop = FALSE],
+
+    function(x) {
+      is.numeric(x) && any(!is.finite(x))
+    },
+
+    logical(1)
+  )
+]
+
+if (length(nonfinite_columns) > 0) {
+
+  stop(
+    "Non-finite values found in: ",
+    paste(nonfinite_columns, collapse = ", "),
+    ". Check for constant columns that became NaN during scaling."
+  )
+}
+
+if (
+  !is.numeric(data[[response_col]]) ||
+  length(unique(data[[response_col]])) < 3
+) {
+  stop("A numeric continuous response is required.")
+}
+
+if (
+  !all(
+    vapply(
+      data[, biomarker_names, drop = FALSE],
+      is.numeric,
+      logical(1)
+    )
+  )
+) {
+  stop("All candidate biomarkers must be numeric.")
+}
+
+
+##########################################################
+############ Generate fixed train/test splits ############
+##########################################################
+
+splits <- vector("list", n_seeds)
+
+for (seed in seq_len(n_seeds)) {
+
+  set.seed(seed)
+
+  # rsample stratifies continuous outcomes using outcome bins.
+  splits[[seed]] <- rsample::initial_split(
+    data,
+    prop = 0.70,
+    strata = tidyselect::all_of(response_col)
+  )
+}
+
+
+# Save the exact split objects for reuse in elastic net and refits.
+# Do not regenerate splits in subsequent chunks.
+saveRDS(
+  splits,
+  "Individually Selected Predictors/Shared_Train_Test_Splits.rds"
+)
+
+
+##########################################################
+################ Begin repeated-split loop ###############
+##########################################################
+
+for (seed in seq_len(n_seeds)) {
+
+  cat("\n=========================\n")
+  cat("Seed:", seed, "\n")
+  cat("=========================\n")
+
+  split <- splits[[seed]]
+
+  train_raw <- rsample::training(split)
+
+  test_data <- rsample::testing(split)
+
+
+  baseline_formula <- make_linear_formula(
+    response = response_col,
+    predictors = predictors
+  )
+
+
+  # Preserve your existing object names.
+  # For continuous outcomes, no class balancing is performed.
+  balanced_train_data <- train_raw
+
+  balanced_weights <- rep(
+    1,
+    nrow(balanced_train_data)
+  )
+
+
+  ########################################################
+  ############ Baseline multiple linear model ############
+  ########################################################
+
+  baseline_model_balanced <- lm(
+    formula = baseline_formula,
+    data = balanced_train_data,
+    weights = balanced_weights,
+    na.action = na.fail
+  )
+
+
+  if (
+    baseline_model_balanced$rank <
+      length(coef(baseline_model_balanced)) ||
+    df.residual(baseline_model_balanced) <= 0
+  ) {
+
+    stop(
+      "The baseline model is not estimable in seed ",
+      seed,
+      ". Check collinearity, categorical levels and sample size."
+    )
+  }
+
+
+  baseline_predictions <- predict(
+    baseline_model_balanced,
+    newdata = test_data
+  )
+
+
+  baseline_metrics <- calculate_regression_metrics(
+    actual = test_data[[response_col]],
+    predicted = baseline_predictions
+  )
+
+
+  baseline_summary <- summary(
+    baseline_model_balanced
+  )
+
+
+  baseline_test_shapiro <- calculate_shapiro(
+    test_data[[response_col]] - baseline_predictions
+  )
+
+
+  ########################################################
+  ############ Individual biomarker analyses #############
+  ########################################################
+
+  # Start at 1, so the first biomarker is not skipped.
+  for (i in seq_along(biomarker_names)) {
+
+    colName <- biomarker_names[i]
+
+    tryCatch({
+
+      predictor_cols <- c(
+        predictors,
+        "Biomarker"
+      )
+
+      formula <- make_linear_formula(
+        response = response_col,
+        predictors = predictor_cols
+      )
+
+
+      temp_train <- train_raw
+
+      temp_test <- test_data
+
+
+      # Pull values from data, whose rows correspond to row_id.
+      biomarker_values <- data[[colName]]
+
+
+      temp_train$Biomarker <- biomarker_values[
+        match(
+          temp_train$row_id,
+          data$row_id
+        )
+      ]
+
+      temp_test$Biomarker <- biomarker_values[
+        match(
+          temp_test$row_id,
+          data$row_id
+        )
+      ]
+
+
+      model_data <- balanced_train_data
+
+      case_weights <- balanced_weights
+
+
+      model_data$Biomarker <- biomarker_values[
+        match(
+          model_data$row_id,
+          data$row_id
+        )
+      ]
+
+
+      # A globally varying biomarker may be constant in a split.
+      if (
+        !is.finite(sd(model_data$Biomarker)) ||
+        sd(model_data$Biomarker) == 0
+      ) {
+        stop("Biomarker has zero variance in this training split.")
+      }
+
+
+      lm_biomarker <- lm(
+        formula = formula,
+        data = model_data,
+        weights = case_weights,
+        na.action = na.fail
+      )
+
+
+      if (
+        lm_biomarker$rank < length(coef(lm_biomarker)) ||
+        df.residual(lm_biomarker) <= 0
+      ) {
+        stop(
+          "Biomarker model is rank deficient or has no residual degrees of freedom."
+        )
+      }
+
+
+      biomarker_predictions <- predict(
+        lm_biomarker,
+        newdata = temp_test
+      )
+
+
+      biomarker_metrics <- calculate_regression_metrics(
+        actual = temp_test[[response_col]],
+        predicted = biomarker_predictions
+      )
+
+
+      ####################################################
+      ################ ANOVA comparison ##################
+      ####################################################
+
+      anova_result <- anova(
+        baseline_model_balanced,
+        lm_biomarker,
+        test = "F"
+      )
+
+      anova_lm <- anova_result$`Pr(>F)`[2]
+
+      anova_f <- anova_result$F[2]
+
+
+      ####################################################
+      ################ Coefficient inference #############
+      ####################################################
+
+      summary_model <- summary(lm_biomarker)
+
+      coef_df <- as.data.frame(
+        summary_model$coefficients
+      )
+
+      coef_df$Predictor <- rownames(coef_df)
+
+      rownames(coef_df) <- NULL
+
+      coef_df$Seed <- seed
+
+      coef_df$Biomarker <- colName
+
+      coef_df$Response <- response_col
+
+
+      # Preserve your logistic code's within-model FDR family.
+      # This includes all coefficient tests in the model.
+      coef_df$FDR <- p.adjust(
+        coef_df$`Pr(>|t|)`,
+        method = "fdr"
+      )
+
+
+      estimate_biomarker <-
+        summary_model$coefficients[
+          "Biomarker",
+          "Estimate"
+        ]
+
+      se_biomarker <-
+        summary_model$coefficients[
+          "Biomarker",
+          "Std. Error"
+        ]
+
+      t_biomarker <-
+        summary_model$coefficients[
+          "Biomarker",
+          "t value"
+        ]
+
+      p_value_biomarker <-
+        summary_model$coefficients[
+          "Biomarker",
+          "Pr(>|t|)"
+        ]
+
+
+      fdr_values <- p.adjust(
+        summary_model$coefficients[, "Pr(>|t|)"],
+        method = "fdr"
+      )
+
+      fdr_biomarker <- fdr_values["Biomarker"]
+
+
+      ####################################################
+      ################ Store model results ###############
+      ####################################################
+
+      results_list[[length(results_list) + 1L]] <-
+        data.frame(
+
+          Seed = seed,
+
+          Biomarker = colName,
+
+          Response = response_col,
+
+          Estimate = unname(estimate_biomarker),
+
+          SE = unname(se_biomarker),
+
+          t_statistic = unname(t_biomarker),
+
+          Pr = unname(p_value_biomarker),
+
+          FDR = unname(fdr_biomarker),
+
+
+          # Independent test-set performance
+          R2_baseline = baseline_metrics$R2,
+
+          R2_biomarker = biomarker_metrics$R2,
+
+          Delta_R2 =
+            biomarker_metrics$R2 -
+            baseline_metrics$R2,
+
+
+          RMSE_baseline = baseline_metrics$RMSE,
+
+          RMSE_biomarker = biomarker_metrics$RMSE,
+
+          # Positive values indicate improved performance.
+          Delta_RMSE =
+            baseline_metrics$RMSE -
+            biomarker_metrics$RMSE,
+
+
+          MAE_baseline = baseline_metrics$MAE,
+
+          MAE_biomarker = biomarker_metrics$MAE,
+
+          Delta_MAE =
+            baseline_metrics$MAE -
+            biomarker_metrics$MAE,
+
+
+          ANOVA_F = anova_f,
+
+          ANOVA_p_value = anova_lm,
+
+
+          # Training-model diagnostics
+          Train_R2_baseline =
+            baseline_summary$r.squared,
+
+          Train_R2_biomarker =
+            summary_model$r.squared,
+
+
+          Train_Adjusted_R2_baseline =
+            baseline_summary$adj.r.squared,
+
+          Train_Adjusted_R2_biomarker =
+            summary_model$adj.r.squared,
+
+
+          Train_RMSE_baseline =
+            sqrt(
+              mean(
+                residuals(baseline_model_balanced)^2
+              )
+            ),
+
+          Train_RMSE_biomarker =
+            sqrt(
+              mean(
+                residuals(lm_biomarker)^2
+              )
+            ),
+
+
+          Train_AIC_baseline =
+            AIC(baseline_model_balanced),
+
+          Train_AIC_biomarker =
+            AIC(lm_biomarker),
+
+
+          Train_BIC_baseline =
+            BIC(baseline_model_balanced),
+
+          Train_BIC_biomarker =
+            BIC(lm_biomarker),
+
+
+          Train_Shapiro_baseline =
+            calculate_shapiro(
+              residuals(baseline_model_balanced)
+            ),
+
+          Train_Shapiro_biomarker =
+            calculate_shapiro(
+              residuals(lm_biomarker)
+            ),
+
+
+          Test_Shapiro_baseline =
+            baseline_test_shapiro,
+
+          Test_Shapiro_biomarker =
+            calculate_shapiro(
+              temp_test[[response_col]] -
+                biomarker_predictions
+            ),
+
+
+          Significant =
+            p_value_biomarker < individual_p_threshold,
+
+          stringsAsFactors = FALSE
+        )
+
+
+      predictor_results[[length(predictor_results) + 1L]] <-
+        coef_df
+
+
+      # Store predictions instead of ROC curves.
+      prediction_storage[[
+        paste(
+          seed,
+          response_col,
+          colName,
+          sep = "_"
+        )
+      ]] <- list(
+
+        observed = temp_test[[response_col]],
+
+        baseline = as.numeric(baseline_predictions),
+
+        predicted = as.numeric(biomarker_predictions),
+
+        row_id = temp_test$row_id,
+
+        r2 = biomarker_metrics$R2,
+
+        rmse = biomarker_metrics$RMSE,
+
+        seed = seed,
+
+        biomarker = colName,
+
+        response = response_col
+      )
+
+    }, error = function(e) {
+
+      failed_models[[length(failed_models) + 1L]] <<-
+        data.frame(
+          Seed = seed,
+          Response = response_col,
+          Biomarker = colName,
+          Reason = conditionMessage(e),
+          stringsAsFactors = FALSE
+        )
+
+      message(
+        "Skipped seed ",
+        seed,
+        ", biomarker ",
+        colName,
+        ": ",
+        conditionMessage(e)
+      )
+    })
+  }
+
+} # ---------------- END OF 50-SEED LOOP ----------------
+
+
+###############################
+#### Combine all results ######
+###############################
+
+results <- bind_rows(results_list)
+
+predictor_results <- bind_rows(predictor_results)
+
+failed_models <- bind_rows(failed_models)
+
+
+if (nrow(failed_models) > 0) {
+
+  write_xlsx(
+    failed_models,
+    "Individually Selected Predictors/Failed_Models.xlsx"
+  )
+}
+
+
+if (nrow(results) == 0) {
+  stop(
+    "No individual biomarker models were successfully fitted. ",
+    "See Failed_Models.xlsx."
+  )
+}
+
+
+# Additional FDR correction across the biomarker screen,
+# separately within each response and seed.
+#
+# FDR retains the original within-model calculation.
+# FDR_across_biomarkers is a separate screening correction.
+results <- results %>%
+
+  group_by(
+    Response,
+    Seed
+  ) %>%
+
+  mutate(
+
+    FDR_across_biomarkers = p.adjust(
+      Pr,
+      method = "fdr",
+      n = length(biomarker_names)
+    ),
+
+    FDR_Significant =
+      FDR_across_biomarkers < predictor_p_threshold
+
+  ) %>%
+
+  ungroup()
+
+
+###############################
+#### Summary across seeds #####
+###############################
+
+summary_results <-
+
+  results %>%
+
+  group_by(
+    Response,
+    Biomarker
+  ) %>%
+
+  summarise(
+
+    Successful_splits = n(),
+
+    Valid_R2_splits = sum(
+      is.finite(R2_biomarker)
+    ),
+
+
+    Mean_Estimate = safe_mean(Estimate),
+
+    SD_Estimate = safe_sd(Estimate),
+
+    Mean_SE = safe_mean(SE),
+
+    Mean_t = safe_mean(t_statistic),
+
+
+    Mean_Pr = safe_mean(Pr),
+
+    Median_Pr = safe_median(Pr),
+
+
+    Mean_FDR = safe_mean(FDR),
+
+    Mean_FDR_across_biomarkers =
+      safe_mean(FDR_across_biomarkers),
+
+
+    Mean_R2_baseline = safe_mean(R2_baseline),
+
+    Lower95_R2_baseline =
+      safe_quantile(R2_baseline, 0.025),
+
+    Upper95_R2_baseline =
+      safe_quantile(R2_baseline, 0.975),
+
+
+    Mean_R2_biomarker = safe_mean(R2_biomarker),
+
+    Lower95_R2_biomarker =
+      safe_quantile(R2_biomarker, 0.025),
+
+    Upper95_R2_biomarker =
+      safe_quantile(R2_biomarker, 0.975),
+
+
+    Mean_Delta_R2 = safe_mean(Delta_R2),
+
+    Lower95_Delta_R2 =
+      safe_quantile(Delta_R2, 0.025),
+
+    Upper95_Delta_R2 =
+      safe_quantile(Delta_R2, 0.975),
+
+
+    Mean_RMSE_baseline = safe_mean(RMSE_baseline),
+
+    Lower95_RMSE_baseline =
+      safe_quantile(RMSE_baseline, 0.025),
+
+    Upper95_RMSE_baseline =
+      safe_quantile(RMSE_baseline, 0.975),
+
+
+    Mean_RMSE_biomarker = safe_mean(RMSE_biomarker),
+
+    Lower95_RMSE_biomarker =
+      safe_quantile(RMSE_biomarker, 0.025),
+
+    Upper95_RMSE_biomarker =
+      safe_quantile(RMSE_biomarker, 0.975),
+
+
+    Mean_Delta_RMSE = safe_mean(Delta_RMSE),
+
+    Lower95_Delta_RMSE =
+      safe_quantile(Delta_RMSE, 0.025),
+
+    Upper95_Delta_RMSE =
+      safe_quantile(Delta_RMSE, 0.975),
+
+
+    Mean_MAE_baseline = safe_mean(MAE_baseline),
+
+    Mean_MAE_biomarker = safe_mean(MAE_biomarker),
+
+    Mean_Delta_MAE = safe_mean(Delta_MAE),
+
+
+    Median_ANOVA = safe_median(ANOVA_p_value),
+
+    Mean_ANOVA_F = safe_mean(ANOVA_F),
+
+
+    Mean_Train_R2_baseline =
+      safe_mean(Train_R2_baseline),
+
+    Mean_Train_R2_biomarker =
+      safe_mean(Train_R2_biomarker),
+
+
+    Mean_Train_Adjusted_R2_baseline =
+      safe_mean(Train_Adjusted_R2_baseline),
+
+    Mean_Train_Adjusted_R2_biomarker =
+      safe_mean(Train_Adjusted_R2_biomarker),
+
+
+    Mean_Train_RMSE_baseline =
+      safe_mean(Train_RMSE_baseline),
+
+    Mean_Train_RMSE_biomarker =
+      safe_mean(Train_RMSE_biomarker),
+
+
+    Mean_Train_AIC_baseline =
+      safe_mean(Train_AIC_baseline),
+
+    Mean_Train_AIC_biomarker =
+      safe_mean(Train_AIC_biomarker),
+
+
+    Mean_Train_BIC_baseline =
+      safe_mean(Train_BIC_baseline),
+
+    Mean_Train_BIC_biomarker =
+      safe_mean(Train_BIC_biomarker),
+
+
+    Median_Train_Shapiro_baseline =
+      safe_median(Train_Shapiro_baseline),
+
+    Median_Train_Shapiro_biomarker =
+      safe_median(Train_Shapiro_biomarker),
+
+
+    Median_Test_Shapiro_baseline =
+      safe_median(Test_Shapiro_baseline),
+
+    Median_Test_Shapiro_biomarker =
+      safe_median(Test_Shapiro_biomarker),
+
+
+    Significant_frequency =
+      sum(Significant, na.rm = TRUE),
+
+    # Denominator remains all requested splits.
+    Significant_percent =
+      round(
+        100 * sum(Significant, na.rm = TRUE) / n_seeds,
+        1
+      ),
+
+
+    FDR_Significant_frequency =
+      sum(FDR_Significant, na.rm = TRUE),
+
+    FDR_Significant_percent =
+      round(
+        100 * sum(FDR_Significant, na.rm = TRUE) / n_seeds,
+        1
+      ),
+
+    .groups = "drop"
+  )
+
+
+###############################
+##### Predictor summary #######
+###############################
+
+predictor_summary <-
+
+  predictor_results %>%
+
+  group_by(
+    Response,
+    Biomarker,
+    Predictor
+  ) %>%
+
+  summarise(
+
+    Successful_splits = n(),
+
+
+    Mean_Estimate =
+      safe_mean(Estimate),
+
+    SD_Estimate =
+      safe_sd(Estimate),
+
+
+    Lower95_Estimate =
+      safe_quantile(Estimate, 0.025),
+
+    Upper95_Estimate =
+      safe_quantile(Estimate, 0.975),
+
+
+    Mean_SE =
+      safe_mean(`Std. Error`),
+
+    Mean_t =
+      safe_mean(`t value`),
+
+
+    Mean_Pr =
+      safe_mean(`Pr(>|t|)`),
+
+    Median_Pr =
+      safe_median(`Pr(>|t|)`),
+
+
+    Mean_FDR =
+      safe_mean(FDR),
+
+
+    Significant_frequency =
+      sum(
+        `Pr(>|t|)` < predictor_p_threshold,
+        na.rm = TRUE
+      ),
+
+    Significant_percent =
+      round(
+        100 *
+          sum(
+            `Pr(>|t|)` < predictor_p_threshold,
+            na.rm = TRUE
+          ) / n_seeds,
+        1
+      ),
+
+
+    FDR_Significant_frequency =
+      sum(
+        FDR < predictor_p_threshold,
+        na.rm = TRUE
+      ),
+
+    FDR_Significant_percent =
+      round(
+        100 *
+          sum(
+            FDR < predictor_p_threshold,
+            na.rm = TRUE
+          ) / n_seeds,
+        1
+      ),
+
+    .groups = "drop"
+  ) %>%
+
+  mutate(
+
+    # Descriptive coefficient range across splits, not an OR.
+    Estimate_display =
+      sprintf(
+        "%.3f (%.3f–%.3f)",
+        Mean_Estimate,
+        Lower95_Estimate,
+        Upper95_Estimate
+      )
+
+  )
+
+
+###############################
+##### Select Top 5 ############
+###############################
+
+# Preserve the original robustness rule:
+# frequent nominal significance plus improved test performance.
+#
+# Delta_R2 replaces Delta_AUC.
+# RMSE improvement is used as an additional ranking criterion.
+robust_results <-
+
+  summary_results %>%
+
+  filter(
+    Significant_frequency >= min_frequency,
+    Mean_Delta_R2 > 0
+  ) %>%
+
+  arrange(
+    desc(Significant_frequency),
+    desc(Mean_Delta_R2),
+    desc(Mean_Delta_RMSE),
+    desc(Mean_R2_biomarker),
+    Mean_Pr
+  )
+
+
+###############################
+#### Display version ##########
+###############################
+
+robust_results_display <-
+
+  robust_results %>%
+
+  mutate(
+
+    Mean_R2_baseline =
+      sprintf(
+        "%.3f (%.3f–%.3f)",
+        Mean_R2_baseline,
+        Lower95_R2_baseline,
+        Upper95_R2_baseline
+      ),
+
+    Mean_R2_biomarker =
+      sprintf(
+        "%.3f (%.3f–%.3f)",
+        Mean_R2_biomarker,
+        Lower95_R2_biomarker,
+        Upper95_R2_biomarker
+      ),
+
+    Mean_Delta_R2 =
+      sprintf(
+        "%.3f (%.3f–%.3f)",
+        Mean_Delta_R2,
+        Lower95_Delta_R2,
+        Upper95_Delta_R2
+      ),
+
+
+    Mean_RMSE_baseline =
+      sprintf(
+        "%.3f (%.3f–%.3f)",
+        Mean_RMSE_baseline,
+        Lower95_RMSE_baseline,
+        Upper95_RMSE_baseline
+      ),
+
+    Mean_RMSE_biomarker =
+      sprintf(
+        "%.3f (%.3f–%.3f)",
+        Mean_RMSE_biomarker,
+        Lower95_RMSE_biomarker,
+        Upper95_RMSE_biomarker
+      ),
+
+    Mean_Delta_RMSE =
+      sprintf(
+        "%.3f (%.3f–%.3f)",
+        Mean_Delta_RMSE,
+        Lower95_Delta_RMSE,
+        Upper95_Delta_RMSE
+      )
+
+  ) %>%
+
+  select(
+    Response,
+    Biomarker,
+
+    Successful_splits,
+
+    Mean_Estimate,
+    Mean_SE,
+    Median_Pr,
+    Mean_FDR,
+    Mean_FDR_across_biomarkers,
+
+    Mean_R2_baseline,
+    Mean_R2_biomarker,
+    Mean_Delta_R2,
+
+    Mean_RMSE_baseline,
+    Mean_RMSE_biomarker,
+    Mean_Delta_RMSE,
+
+    Mean_MAE_baseline,
+    Mean_MAE_biomarker,
+
+    Median_ANOVA,
+
+    Significant_frequency,
+    Significant_percent,
+
+    FDR_Significant_frequency,
+    FDR_Significant_percent
+  )
+
+
+top5 <-
+
+  robust_results %>%
+
+  slice_head(n = 5)
+
+
+###############################
+##### HTML table ##############
+###############################
+
+# Return the widget as a visible top-level expression so it
+# renders in the knitted HTML document.
+robust_widget <- datatable(
+  robust_results_display,
+
+  rownames = FALSE,
+
+  caption = htmltools::tags$caption(
+    style = paste(
+      "caption-side: top;",
+      "text-align: left;",
+      "font-weight: bold;"
+    ),
+
+    paste0(
+      "Average performance across ",
+      n_seeds,
+      " random stratified 70/30 train/test splits"
+    )
+  ),
+
+  extensions = "Buttons",
+
+  options = list(
+    pageLength = 50,
+    autoWidth = TRUE,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel"),
+    order = list()
+  )
+)
+
+
+numeric_display_columns <- names(
+  robust_results_display
+)[
+  vapply(
+    robust_results_display,
+    is.numeric,
+    logical(1)
+  )
+]
+
+
+if (length(numeric_display_columns) > 0) {
+
+  robust_widget <- formatRound(
+    robust_widget,
+    columns = numeric_display_columns,
+    digits = 3
+  )
+}
+
+
+htmltools::tagList(
+
+  htmltools::tags$details(
+
+    htmltools::tags$summary(
+      style = "font-size:1.8em;",
+
+      paste0(
+        "Robust Biomarkers Across ",
+        n_seeds,
+        " Random Stratified 70/30 Splits"
+      )
+    ),
+
+    htmltools::tags$br(),
+
+    htmltools::tags$p(
+      paste(
+        "Parentheses show the 2.5th–97.5th percentiles",
+        "across splits, not confidence intervals."
+      )
+    ),
+
+    robust_widget
+  )
+)
+
+
+###############################
+##### Save Excel files ########
+###############################
+
+write_xlsx(
+  results,
+  "Individually Selected Predictors/Individual_Biomarkers_AllSeeds.xlsx"
+)
+
+write_xlsx(
+  summary_results,
+  "Individually Selected Predictors/Individual_Biomarkers_Summary.xlsx"
+)
+
+write_xlsx(
+  robust_results_display,
+  "Individually Selected Predictors/Robust_Biomarkers.xlsx"
+)
+
+write_xlsx(
+  predictor_results,
+  "Individually Selected Predictors/Predictor_Coefficients_AllSeeds.xlsx"
+)
+
+write_xlsx(
+  predictor_summary,
+  "Individually Selected Predictors/Predictor_Coefficients_Summary.xlsx"
+)
+
+
+# Preserve predictions for later plots and reproducibility.
+saveRDS(
+  prediction_storage,
+  "Individually Selected Predictors/Individual_Biomarker_Predictions.rds"
+)
+
+
+###############################
+##### Representative plots ####
+###############################
+
+cat(
+  paste0(
+    "<details><summary style='font-size:1.8em;'>",
+    "Representative Observed versus Predicted Plots ",
+    "(Top 5 Biomarkers)",
+    "</summary><br>\n\n"
+  )
+)
+
+
+if (nrow(top5) == 0) {
+
+  cat(
+    "No biomarkers met the specified robustness criteria.\n\n"
+  )
+
+} else {
+
+  for (i in seq_len(nrow(top5))) {
+
+    biomarker <- top5$Biomarker[i]
+
+    target_r2 <- top5$Mean_R2_biomarker[i]
+
+
+    tmp <-
+
+      results %>%
+
+      filter(
+        Biomarker == biomarker,
+        Response == top5$Response[i],
+        is.finite(R2_biomarker)
+      )
+
+
+    if (nrow(tmp) == 0) {
+      next
+    }
+
+
+    closest_seed <- tmp$Seed[
+      which.min(
+        abs(
+          tmp$R2_biomarker - target_r2
+        )
+      )
+    ]
+
+
+    prediction_key <- paste(
+      closest_seed,
+      top5$Response[i],
+      biomarker,
+      sep = "_"
+    )
+
+    prediction_obj <- prediction_storage[[prediction_key]]
+
+
+    plot_data <- data.frame(
+      Observed = prediction_obj$observed,
+      Predicted = prediction_obj$predicted
+    )
+
+
+    representative_plot <-
+
+      ggplot(
+        plot_data,
+        aes(
+          x = Observed,
+          y = Predicted
+        )
+      ) +
+
+      geom_point(
+        alpha = 0.75,
+        color = "#2166AC",
+        size = 2
+      ) +
+
+      geom_abline(
+        intercept = 0,
+        slope = 1,
+        linetype = "dashed",
+        color = "#B2182B"
+      ) +
+
+      coord_equal() +
+
+      theme_minimal(base_size = 12) +
+
+      labs(
+        title = biomarker,
+
+        subtitle = paste0(
+          "Representative split: seed ",
+          closest_seed,
+          " | Test R² = ",
+          sprintf("%.3f", prediction_obj$r2),
+          " | Test RMSE = ",
+          sprintf("%.3f", prediction_obj$rmse)
+        ),
+
+        x = "Observed outcome",
+
+        y = "Predicted outcome",
+
+        caption = paste(
+          "Dashed line: perfect prediction.",
+          "Representative split chosen for descriptive illustration only."
+        )
+      )
+
+
+    print(representative_plot)
+  }
+}
+
+
+cat("\n\n</details>\n")
+
+
+###############################
+##### Clean-up ################
+###############################
+
+# Keep data$row_id and splits unchanged.
+# Elastic net and de-novo analyses must reuse these split objects.
+#
+# Keep results, summary_results, predictor_results,
+# predictor_summary, robust_results and top5 for later chunks.
+
+rm(results_list)
+
+
+```
+
+## Obtaining the estimates and p-values of all predictors included in the baseline model together with the selected significant biomarker
+
+```{r results='asis'}
+
+
+
+# Load necessary libraries for table display
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(writexl)
+
+###############################
+#### Predictor summaries ######
+###############################
+
+dir.create(
+  "Models with Individually Selected Biomarkers",
+  showWarnings = FALSE
+)
+
+sorted_results <-
+  robust_results %>%
+  arrange(
+    desc(Significant_frequency),
+    desc(Mean_Delta_R2),
+    desc(Mean_Delta_RMSE),
+    desc(Mean_R2_biomarker)
+  )
+
+
+# Escape variable names when inserting them into HTML
+escape_html <- function(x) {
+  as.character(
+    htmltools::htmlEscape(as.character(x))
+  )
+}
+
+
+if (nrow(sorted_results) == 0) {
+
+  cat(
+    "<p>No biomarkers met the specified robustness criteria.</p>"
+  )
+}
+
+
+for (response_var in unique(sorted_results$Response)) {
+
+  cat(
+    paste0(
+      '<details><summary style="font-size:1.2em;"><strong>',
+      escape_html(response_var),
+      '</strong></summary>',
+      '<div style="margin-left:20px;margin-top:10px;">'
+    )
+  )
+
+  response_results <-
+    sorted_results %>%
+    filter(Response == response_var)
+
+
+  for (i in seq_len(nrow(response_results))) {
+
+    biomarker <- response_results$Biomarker[i]
+
+    model_name <- paste(
+      biomarker,
+      response_var,
+      sep = "_"
+    )
+
+
+    predictors_df <-
+      predictor_summary %>%
+
+      filter(
+        Response == response_var,
+        Biomarker == biomarker
+      ) %>%
+
+      mutate(
+
+        `β ± SD` = sprintf(
+          "%.3f ± %.3f",
+          Mean_Estimate,
+          SD_Estimate
+        ),
+
+        `β empirical range` = sprintf(
+          "%.3f–%.3f",
+          Lower95_Estimate,
+          Upper95_Estimate
+        )
+
+      ) %>%
+
+      select(
+        Predictor,
+
+        Successful_splits,
+
+        `β ± SD`,
+
+        `β empirical range`,
+
+        Mean_SE,
+
+        Mean_t,
+
+        Median_Pr,
+
+        Mean_FDR,
+
+        Significant_percent,
+
+        FDR_Significant_percent
+      )
+
+
+    if (nrow(predictors_df) == 0) {
+      next
+    }
+
+
+    ####################################################
+    #### Collapsible section ###########################
+    ####################################################
+
+    cat(
+      paste0(
+        '<details><summary style="font-size:1.1em;">',
+        escape_html(biomarker),
+        "</summary>",
+        '<div style="margin-left:20px;margin-top:10px;">'
+      )
+    )
+
+
+    ####################################################
+    #### Biomarker performance #########################
+    ####################################################
+
+    cat(
+      paste0(
+
+        "<b>Successful model fits:</b> ",
+        response_results$Successful_splits[i],
+        "/",
+        n_seeds,
+        "<br>",
+
+
+        "<b>Significant frequency (p &lt; ",
+        individual_p_threshold,
+        "):</b> ",
+        response_results$Significant_frequency[i],
+        "/",
+        n_seeds,
+        " (",
+        response_results$Significant_percent[i],
+        "%)<br>",
+
+
+        "<b>Across-biomarker FDR-significant frequency:</b> ",
+        response_results$FDR_Significant_frequency[i],
+        "/",
+        n_seeds,
+        " (",
+        response_results$FDR_Significant_percent[i],
+        "%)<br><br>",
+
+
+        "<b>Mean baseline test R²:</b> ",
+        round(response_results$Mean_R2_baseline[i], 3),
+        " (empirical range: ",
+        round(response_results$Lower95_R2_baseline[i], 3),
+        "–",
+        round(response_results$Upper95_R2_baseline[i], 3),
+        ")<br>",
+
+
+        "<b>Mean biomarker-model test R²:</b> ",
+        round(response_results$Mean_R2_biomarker[i], 3),
+        " (empirical range: ",
+        round(response_results$Lower95_R2_biomarker[i], 3),
+        "–",
+        round(response_results$Upper95_R2_biomarker[i], 3),
+        ")<br>",
+
+
+        "<b>Mean ΔR²:</b> ",
+        round(response_results$Mean_Delta_R2[i], 3),
+        " (empirical range: ",
+        round(response_results$Lower95_Delta_R2[i], 3),
+        "–",
+        round(response_results$Upper95_Delta_R2[i], 3),
+        ")<br><br>",
+
+
+        "<b>Mean baseline test RMSE:</b> ",
+        round(response_results$Mean_RMSE_baseline[i], 3),
+        " (empirical range: ",
+        round(response_results$Lower95_RMSE_baseline[i], 3),
+        "–",
+        round(response_results$Upper95_RMSE_baseline[i], 3),
+        ")<br>",
+
+
+        "<b>Mean biomarker-model test RMSE:</b> ",
+        round(response_results$Mean_RMSE_biomarker[i], 3),
+        " (empirical range: ",
+        round(response_results$Lower95_RMSE_biomarker[i], 3),
+        "–",
+        round(response_results$Upper95_RMSE_biomarker[i], 3),
+        ")<br>",
+
+
+        "<b>Mean RMSE improvement (baseline − biomarker):</b> ",
+        round(response_results$Mean_Delta_RMSE[i], 3),
+        " (empirical range: ",
+        round(response_results$Lower95_Delta_RMSE[i], 3),
+        "–",
+        round(response_results$Upper95_Delta_RMSE[i], 3),
+        ")<br><br>",
+
+
+        "<b>Mean baseline test MAE:</b> ",
+        round(response_results$Mean_MAE_baseline[i], 3),
+        "<br>",
+
+
+        "<b>Mean biomarker-model test MAE:</b> ",
+        round(response_results$Mean_MAE_biomarker[i], 3),
+        "<br>",
+
+
+        "<b>Median training ANOVA F-test p-value:</b> ",
+        format.pval(
+          response_results$Median_ANOVA[i],
+          digits = 3,
+          eps = 0.001
+        ),
+        "<br><br>",
+
+
+        "<small>",
+        "Empirical ranges show the 2.5th–97.5th percentiles ",
+        "across splits; they are not confidence intervals. ",
+        "Positive ΔR² and RMSE improvement indicate better ",
+        "test prediction.",
+        "</small><br><br>"
+
+      )
+    )
+
+
+    ####################################################
+    #### Save Excel ####################################
+    ####################################################
+
+    file_name <-
+      paste0(
+        "Models with Individually Selected Biomarkers/",
+
+        gsub(
+          "[^[:alnum:]_]",
+          "_",
+          model_name
+        ),
+
+        ".xlsx"
+      )
+
+
+    write_xlsx(
+      predictors_df,
+      path = file_name
+    )
+
+
+    cat(
+      paste0(
+        '<a href="',
+        escape_html(file_name),
+        '" download>',
+        'Download averaged predictor table (.xlsx)',
+        '</a><br><br>'
+      )
+    )
+
+
+    ####################################################
+    #### HTML table ####################################
+    ####################################################
+
+    kable(
+      predictors_df,
+
+      format = "html",
+
+      digits = 3,
+
+      caption = paste(
+        "Predictor coefficient summaries across",
+        n_seeds,
+        "random stratified 70/30 train/test splits"
+      ),
+
+      align = "c",
+
+      escape = TRUE
+    ) %>%
+
+      kable_styling(
+        bootstrap_options = c(
+          "striped",
+          "hover",
+          "condensed",
+          "responsive"
+        ),
+
+        full_width = FALSE,
+
+        position = "center"
+      ) %>%
+
+      column_spec(
+        1,
+        bold = TRUE
+      ) %>%
+
+      row_spec(
+        0,
+        bold = TRUE,
+        color = "white",
+        background = "black"
+      ) %>%
+
+      print()
+
+
+    cat(
+      paste0(
+        "<p><small>",
+        "β ± SD summarizes coefficient estimates across splits. ",
+        "Mean_SE is the average model-based standard error; ",
+        "it differs from the across-split SD. ",
+        "Mean_FDR and FDR_Significant_percent in this table use ",
+        "the within-model correction retained from your logistic code. ",
+        "Predictor significance percentages use a threshold of ",
+        predictor_p_threshold,
+        " and all ",
+        n_seeds,
+        " requested splits as the denominator.",
+        "</small></p>"
+      )
+    )
+
+
+    cat("</div></details><br>")
+  }
+
+
+  cat("</div></details><br>")
+}
+
+
+
+```
+
+
+A categorical variable that for example contains values from 1 to 4 in the original dataset will only show levels 2 to 4 in the output of the model. This suggests that the reference level in the model is set to level 1, meaning the coefficients for levels 2 to 4 represent differences compared to level 1. When using a categorical variable in model regression, R automatically treats one of the levels as the reference category, comparing all other levels against it. This is standard practice for handling categorical predictors in regression models.
+
+
+
+
+## Package Loading to perform Elastic Net
+
+```{r fig.width=12, fig.height=8}
+
+
+
+
+library(tidyverse) 
+library(survival)
+library(glmnet)  # For regularization and model fitting
+library(caret)   # For data splitting and preprocessing
+library(rsample) # For stratified sampling
+library(knitr)
+
+
+# No need to standarize the data as the function glmnet() does it automatically in the same way as the scale() function (substracting the mean of the predictor to each predictor value and dividing for the SD) -> but we do not want to scale everything, only the biomarkers! ->
+
+# Update the dataset with the scaled biomarker data ----> Previously done
+
+
+
+
+```
+
+
+
+## Performing Elastic Net and obtaining the cross-validation plots
+
+
+We also calculate here the performance of the model generated by machine learning, as well as the performance of the model using the same matrix ustilised for machine learning and the same machine learning algorithm. This will not result in any "chosen" variable since we are forcing the machine learning algorithm to use the predictors that we consider mandatory, but it will give us a performance of the "machine learning - baseline model" that we can compare with the performance of the models generated by machine learning when freely choosing biomarkers within our omic dataset. These will indicate how good the machine learning model predictions are, specially compared with a baseline model without biomarkers from our omics data.
+
+
+Removed for loop over response_cols as they is only one which was used for the splitting of the data into training and test sets, which we used at the beginning of the code for both our individual marker selection loop and our elastic net marker selection loop!!! 
+
+
+```{r results='asis'}
+
+
+
+
+############################################################
+################ Elastic Net initialization ################
+############################################################
+
+library(glmnet)
+library(rsample)
+library(kableExtra)
+library(dplyr)
+library(writexl)
+library(broom)
+
+
+############################################################
+################ TODO User settings ########################
+############################################################
+
+response_cols <- colnames(data)[columns_response]
+
+# Preserve the original chunk's first-response behavior.
+response_col <- response_cols[[1]]
+
+exclude_columns <- c(response_cols, "row_id")
+
+# Requested grid: 11 alpha values x 2 fold settings.
+alpha_values <- seq(0.05, 1, 0.05)
+
+nfolds_values <- c(5,10,20)
+
+# Mandatory-only Ridge baseline uses 10-fold CV.
+baseline_nfolds <- 10L
+
+# Reuse n_seeds and splits from the individual-biomarker chunk.
+# Do not regenerate the train/test splits here.
+if (
+  !exists("splits") ||
+  !exists("n_seeds") ||
+  length(splits) != n_seeds
+) {
+  stop("Run the individual-biomarker chunk to create the shared splits first.")
+}
+
+
+############# TODO #####################
+
+
+if (n_seeds != 50) {
+  stop("The requested workflow requires 50 shared splits.")
+}
+
+required_helpers <- c(
+  "make_linear_formula",
+  "calculate_regression_metrics",
+  "calculate_shapiro",
+  "safe_mean",
+  "safe_median",
+  "safe_sd",
+  "safe_quantile"
+)
+
+missing_helpers <- required_helpers[
+  !vapply(
+    required_helpers,
+    exists,
+    logical(1),
+    mode = "function"
+  )
+]
+
+if (length(missing_helpers) > 0) {
+  stop(
+    "Run the preceding individual-biomarker chunk first. Missing helpers: ",
+    paste(missing_helpers, collapse = ", ")
+  )
+}
+
+main_predictors <- setdiff(
+  colnames(data)[columns_predictors],
+  exclude_columns
+)
+
+biomarker_names <- setdiff(
+  names(data_Biomarker),
+  exclude_columns
+)
+
+if (length(intersect(main_predictors, biomarker_names)) > 0) {
+  stop("Mandatory predictors and candidate biomarkers overlap.")
+}
+
+if (!length(main_predictors) || !length(biomarker_names)) {
+  stop("Both mandatory predictors and candidate biomarkers are required.")
+}
+
+
+############################################################
+################ Preserve previous results #################
+############################################################
+
+# This chunk reuses results and summary_results, as your
+# logistic code did. Preserve the individual-biomarker tables.
+individual_results <- results
+
+individual_summary_results <- summary_results
+
+
+############################################################
+################ Storage ###################################
+############################################################
+
+results_list <- list()
+
+coef_list <- list()
+
+selected_variables_list <- list()
+
+biomarker_selection_list <- list()
+
+elastic_prediction_storage <- list()
+
+warnings <- character()
+
+failure_list <- list()
+
+design_mapping_list <- list()
+
+baseline_results_list <- list()
+
+baseline_coef_list <- list()
+
+
+############################################################
+############ Store cv.glmnet objects ########################
+############################################################
+
+cv_models <- list()
+
+baseline_cv_models <- list()
+
+# Same fold IDs are reused across alpha values within a split.
+cv_fold_storage <- list()
+
+
+############################################################
+############### De novo refitting storage ##################
+############################################################
+
+refit_results_list <- list()
+
+refit_coef_list <- list()
+
+refit_prediction_storage <- list()
+
+refit_baseline_coef_list <- list()
+
+
+############################################################
+################ Helper functions ##########################
+############################################################
+
+# Create balanced-size CV folds spread across the
+# continuous-outcome distribution.
+make_regression_folds <- function(y, k, seed_value) {
+
+  if (length(y) < 3 * k) {
+    stop(
+      "At least ",
+      3 * k,
+      " training observations are required for ",
+      k,
+      "-fold CV with at least three observations per fold."
+    )
+  }
+
+  set.seed(seed_value)
+
+  ordered_rows <- order(y, runif(length(y)))
+
+  blocks <- split(
+    ordered_rows,
+    ceiling(seq_along(ordered_rows) / k)
+  )
+
+  fold_id <- integer(length(y))
+
+  for (block in blocks) {
+    fold_id[block] <- sample.int(k, length(block))
+  }
+
+  fold_id
+}
+
+
+# Training diagnostics for ordinary linear models.
+get_lm_diagnostics <- function(fit) {
+
+  s <- summary(fit)
+
+  c(
+    R2 = s$r.squared,
+    Adjusted_R2 = s$adj.r.squared,
+    RMSE = sqrt(mean(residuals(fit)^2)),
+    AIC = AIC(fit),
+    BIC = BIC(fit),
+    Shapiro = calculate_shapiro(residuals(fit))
+  )
+}
+
+
+# Check that ordinary linear-model inference is identifiable.
+check_lm_fit <- function(fit) {
+
+  if (fit$rank < length(coef(fit))) {
+    stop("OLS model is rank deficient: collinear or too many predictors.")
+  }
+
+  if (df.residual(fit) <= 0) {
+    stop("OLS model has no residual degrees of freedom.")
+  }
+
+  invisible(fit)
+}
+
+
+############################################################
+################ Warning handler ###########################
+############################################################
+
+warning_context <- "Initialization"
+
+capture_warning <- function(w) {
+
+  warnings <<- c(
+    warnings,
+    paste0(
+      warning_context,
+      ": ",
+      conditionMessage(w)
+    )
+  )
+
+  invokeRestart("muffleWarning")
+}
+
+
+############################################################
+############## Start warning capture #######################
+############################################################
+
+withCallingHandlers({
+
+  for (seed in seq_len(n_seeds)) {
+
+    cat("\n=========================\n")
+    cat("Seed:", seed, "\n")
+    cat("=========================\n")
+
+    warning_context <- paste("Seed", seed)
+
+
+    ########################################################
+    ########### Reuse predefined stratified split ###########
+    ########################################################
+
+    split <- splits[[seed]]
+
+    train_raw <- rsample::training(split)
+
+    test_data <- rsample::testing(split)
+
+
+    ########################################################
+    ########### Training data / equal weights ###############
+    ########################################################
+
+    # Continuous response: no class balancing.
+    # Keep every training observation.
+    train_data <- train_raw
+
+    sample_weights <- rep(
+      1,
+      nrow(train_data)
+    )
+
+    y_train <- train_data[[response_col]]
+
+    y_test <- test_data[[response_col]]
+
+    if (
+      any(!is.finite(y_train)) ||
+      any(!is.finite(y_test)) ||
+      sd(y_train) == 0
+    ) {
+      stop("Invalid or constant training outcome in seed ", seed)
+    }
+
+
+    ########################################################
+    ########### Validate predictors ########################
+    ########################################################
+
+    all_input_columns <- unique(
+      c(main_predictors, biomarker_names)
+    )
+
+    if (!all(all_input_columns %in% names(train_data))) {
+      stop("Some predictors are absent from the saved splits.")
+    }
+
+    nonfinite_columns <- all_input_columns[
+      vapply(
+        train_data[, all_input_columns, drop = FALSE],
+
+        function(x) {
+          is.numeric(x) && any(!is.finite(x))
+        },
+
+        logical(1)
+      )
+    ]
+
+    if (length(nonfinite_columns) > 0) {
+      stop(
+        "Non-finite training values in seed ",
+        seed,
+        ": ",
+        paste(nonfinite_columns, collapse = ", "),
+        ". Check constant columns that became NaN during scaling."
+      )
+    }
+
+    if (
+      !all(
+        vapply(
+          train_data[, biomarker_names, drop = FALSE],
+          is.numeric,
+          logical(1)
+        )
+      )
+    ) {
+      stop("Candidate biomarkers must be numeric.")
+    }
+
+    # Exclude biomarkers that cannot be estimated in this split.
+    # This does not modify the saved train/test split objects.
+    active_biomarkers <- biomarker_names[
+      vapply(
+        train_data[, biomarker_names, drop = FALSE],
+        function(x) sd(x) > 0,
+        logical(1)
+      )
+    ]
+
+    if (!length(active_biomarkers)) {
+      stop("No varying biomarkers in training seed ", seed)
+    }
+
+    for (variable in main_predictors) {
+
+      if (length(unique(train_data[[variable]])) < 2) {
+        stop(
+          "Mandatory predictor is constant in training seed ",
+          seed,
+          ": ",
+          variable
+        )
+      }
+
+      if (is.factor(train_data[[variable]])) {
+
+        if (any(table(train_data[[variable]]) == 0)) {
+          stop(
+            "A categorical level is absent from training seed ",
+            seed,
+            ": ",
+            variable,
+            ". Review rare categories before running."
+          )
+        }
+      }
+    }
+
+
+    ########################################################
+    ########### Design matrices #############################
+    ########################################################
+
+    # Explicitly include only mandatory predictors and biomarkers.
+    # Outcomes and row_id cannot enter the predictor matrix.
+    predictor_variables <- c(
+      main_predictors,
+      active_biomarkers
+    )
+
+    x_train <- train_data[
+      ,
+      predictor_variables,
+      drop = FALSE
+    ]
+
+    x_test <- test_data[
+      ,
+      predictor_variables,
+      drop = FALSE
+    ]
+
+    active_factors <- names(x_train)[
+      vapply(x_train, is.factor, logical(1))
+    ]
+
+    current_contrasts <- NULL
+
+    if (length(active_factors) > 0) {
+
+      current_contrasts <- lapply(
+        setNames(active_factors, active_factors),
+
+        function(variable) {
+          contrasts(
+            x_train[[variable]],
+            contrasts = TRUE
+          )
+        }
+      )
+    }
+
+    # Include an intercept while constructing treatment contrasts,
+    # then remove the intercept column because glmnet fits its own.
+    train_design <- model.matrix(
+      ~ .,
+      data = x_train,
+      contrasts.arg = current_contrasts
+    )
+
+    test_design <- model.matrix(
+      ~ .,
+      data = x_test,
+      contrasts.arg = current_contrasts
+    )
+
+    design_assign <- attr(
+      train_design,
+      "assign"
+    )[-1]
+
+    x_train_matrix <- train_design[
+      ,
+      -1,
+      drop = FALSE
+    ]
+
+    if (anyDuplicated(colnames(x_train_matrix))) {
+      stop("Duplicate design-matrix column names. Rename conflicting variables.")
+    }
+
+    if (
+      !all(
+        colnames(x_train_matrix) %in% colnames(test_design)
+      )
+    ) {
+      stop("Training and test design matrices have incompatible columns.")
+    }
+
+    x_test_matrix <- test_design[
+      ,
+      colnames(x_train_matrix),
+      drop = FALSE
+    ]
+
+    if (
+      any(!is.finite(x_train_matrix)) ||
+      any(!is.finite(x_test_matrix))
+    ) {
+      stop("Non-finite design-matrix values in seed ", seed)
+    }
+
+    predictor_names <- colnames(x_train_matrix)
+
+    # With ~ . and no interactions, term assignments correspond
+    # to the columns of x_train in their original order.
+    design_source <- names(x_train)[design_assign]
+
+    # Automatically identify mandatory columns, including dummies.
+    columns_predictors_x <- which(
+      design_source %in% main_predictors
+    )
+
+    if (length(columns_predictors_x) < 2) {
+      stop("The glmnet Ridge baseline requires at least two design columns.")
+    }
+
+    design_mapping_list[[length(design_mapping_list) + 1L]] <-
+      data.frame(
+        Seed = seed,
+        Response = response_col,
+        Design_column = predictor_names,
+        Original_variable = design_source,
+        Mandatory = design_source %in% main_predictors,
+        stringsAsFactors = FALSE
+      )
+
+
+    ########################################################
+    ########### Define shared internal CV folds #############
+    ########################################################
+
+    fold_ids <- list()
+
+    for (
+      k in sort(
+        unique(c(nfolds_values, baseline_nfolds))
+      )
+    ) {
+
+      fold_ids[[as.character(k)]] <-
+        make_regression_folds(
+          y = y_train,
+          k = k,
+          seed_value = seed + 1000L * k
+        )
+    }
+
+    cv_fold_storage[[
+      paste(response_col, seed, sep = "_")
+    ]] <- list(
+      row_id = train_data$row_id,
+      folds = fold_ids
+    )
+
+
+    ########################################################
+    ################ Baseline Ridge model ##################
+    ########################################################
+
+    warning_context <- paste(
+      "Seed",
+      seed,
+      "baseline Ridge"
+    )
+
+    baseline_matrix <- x_train_matrix[
+      ,
+      columns_predictors_x,
+      drop = FALSE
+    ]
+
+    baseline_test_matrix <- x_test_matrix[
+      ,
+      columns_predictors_x,
+      drop = FALSE
+    ]
+
+    baseline_cvfit <- cv.glmnet(
+      x = baseline_matrix,
+      y = y_train,
+
+      family = "gaussian",
+
+      alpha = 0,
+
+      nfolds = baseline_nfolds,
+
+      foldid = fold_ids[[
+        as.character(baseline_nfolds)
+      ]],
+
+      type.measure = "mse",
+
+      # Preserve your existing scaling convention.
+      standardize = FALSE,
+
+      weights = sample_weights
+    )
+
+    baseline_lambda <- baseline_cvfit$lambda.min
+
+    baseline_cv_models[[
+      paste(response_col, seed, sep = "_")
+    ]] <- baseline_cvfit
+
+    # Refit the lambda path to retain glmnet warm starts.
+    # Prediction and coefficients are extracted at lambda.min.
+    baseline_model <- glmnet(
+      x = baseline_matrix,
+      y = y_train,
+
+      family = "gaussian",
+
+      alpha = 0,
+
+      lambda = baseline_cvfit$lambda,
+
+      standardize = FALSE,
+
+      weights = sample_weights
+    )
+
+    baseline_predictions <- as.numeric(
+      predict(
+        baseline_model,
+        newx = baseline_test_matrix,
+        s = baseline_lambda,
+        type = "response"
+      )
+    )
+
+    baseline_metrics <- calculate_regression_metrics(
+      actual = y_test,
+      predicted = baseline_predictions
+    )
+
+    baseline_test_shapiro <- calculate_shapiro(
+      y_test - baseline_predictions
+    )
+
+    baseline_results_list[[length(baseline_results_list) + 1L]] <-
+      data.frame(
+        Seed = seed,
+        Response = response_col,
+        nfolds = baseline_nfolds,
+        Lambda_min = baseline_lambda,
+        Lambda_1se = baseline_cvfit$lambda.1se,
+        CV_MSE = min(baseline_cvfit$cvm),
+        Test_R2 = baseline_metrics$R2,
+        Test_RMSE = baseline_metrics$RMSE,
+        Test_MAE = baseline_metrics$MAE,
+        Test_Shapiro = baseline_test_shapiro
+      )
+
+    baseline_coefficients <- as.matrix(
+      coef(
+        baseline_model,
+        s = baseline_lambda
+      )
+    )
+
+    baseline_coef_list[[length(baseline_coef_list) + 1L]] <-
+      data.frame(
+        Seed = seed,
+        Response = response_col,
+        Variable = rownames(baseline_coefficients),
+        Coefficient = baseline_coefficients[, 1],
+        row.names = NULL
+      )
+
+
+    ########################################################
+    ########### Baseline OLS for de-novo comparisons #########
+    ########################################################
+
+    baseline_formula <- make_linear_formula(
+      response = response_col,
+      predictors = main_predictors
+    )
+
+    baseline_lm <- lm(
+      formula = baseline_formula,
+      data = train_data,
+      weights = sample_weights,
+      na.action = na.fail
+    )
+
+    check_lm_fit(baseline_lm)
+
+    baseline_predictions_lm <- as.numeric(
+      predict(
+        baseline_lm,
+        newdata = test_data
+      )
+    )
+
+    baseline_metrics_lm <- calculate_regression_metrics(
+      actual = y_test,
+      predicted = baseline_predictions_lm
+    )
+
+    baseline_train_diagnostics <- get_lm_diagnostics(
+      baseline_lm
+    )
+
+    baseline_test_shapiro_lm <- calculate_shapiro(
+      y_test - baseline_predictions_lm
+    )
+
+    refit_baseline_coef_list[[
+      length(refit_baseline_coef_list) + 1L
+    ]] <-
+      broom::tidy(baseline_lm) %>%
+      mutate(
+        FDR = p.adjust(p.value, method = "fdr"),
+        Seed = seed,
+        Response = response_col
+      )
+
+
+    ########################################################
+    ########## Loop over nfolds #############################
+    ########################################################
+
+    for (nfolds_val in nfolds_values) {
+
+
+      ######################################################
+      ########### Loop over alpha ##########################
+      ######################################################
+
+      for (alpha_val in alpha_values) {
+
+        warning_context <- paste(
+          "Seed", seed,
+          "alpha", alpha_val,
+          "folds", nfolds_val
+        )
+
+        tryCatch({
+
+          penalty.factor <- rep(
+            1,
+            ncol(x_train_matrix)
+          )
+
+          penalty.factor[columns_predictors_x] <- 0
+
+
+          ##################################################
+          ################ Fit Elastic Net #################
+          ##################################################
+
+          cvfit <- cv.glmnet(
+            x = x_train_matrix,
+            y = y_train,
+
+            family = "gaussian",
+
+            alpha = alpha_val,
+
+            nfolds = nfolds_val,
+
+            foldid = fold_ids[[
+              as.character(nfolds_val)
+            ]],
+
+            type.measure = "mse",
+
+            penalty.factor = penalty.factor,
+
+            standardize = FALSE,
+
+            weights = sample_weights
+          )
+
+          lambda_min <- cvfit$lambda.min
+
+          lambda_1se <- cvfit$lambda.1se
+
+          cv_mse <- min(cvfit$cvm)
+
+          if (!is.finite(cv_mse)) {
+            stop("Cross-validation returned a non-finite MSE.")
+          }
+
+
+          ##################################################
+          ############ Store CV model ######################
+          ##################################################
+
+          cv_key <- paste(
+            response_col,
+            alpha_val,
+            nfolds_val,
+            seed,
+            sep = "_"
+          )
+
+          cv_models[[cv_key]] <- cvfit
+
+
+          ##################################################
+          ################ Final model #####################
+          ##################################################
+
+          model <- glmnet(
+            x = x_train_matrix,
+            y = y_train,
+
+            family = "gaussian",
+
+            alpha = alpha_val,
+
+            lambda = cvfit$lambda,
+
+            penalty.factor = penalty.factor,
+
+            standardize = FALSE,
+
+            weights = sample_weights
+          )
+
+
+          ##################################################
+          ################ Test predictions ################
+          ##################################################
+
+          predictions <- as.numeric(
+            predict(
+              model,
+              newx = x_test_matrix,
+              s = lambda_min,
+              type = "response"
+            )
+          )
+
+          elastic_metrics <- calculate_regression_metrics(
+            actual = y_test,
+            predicted = predictions
+          )
+
+
+          ##################################################
+          ######## Number of selected predictors ###########
+          ##################################################
+
+          coefficient_matrix <- as.matrix(
+            coef(
+              model,
+              s = lambda_min
+            )
+          )
+
+          coef_vector <- coefficient_matrix[, 1]
+
+          coef_names <- rownames(coefficient_matrix)
+
+          # Nonzero biomarker coefficients define the panel.
+          # Mandatory predictors remain in the signature
+          # even if an estimated coefficient equals zero.
+          selected_biomarkers <- unique(
+            design_source[
+              coef_vector[-1] != 0 &
+                !(design_source %in% main_predictors)
+            ]
+          )
+
+          all_predictors <- unique(
+            c(
+              main_predictors,
+              selected_biomarkers
+            )
+          )
+
+          # Count design columns, including factor dummies.
+          selected_predictors <- sum(
+            (coef_vector[-1] != 0) |
+              (design_source %in% main_predictors)
+          )
+
+
+          ##################################################
+          ######## Store model performance #################
+          ##################################################
+
+          results_list[[length(results_list) + 1L]] <-
+            data.frame(
+              Seed = seed,
+              Response = response_col,
+              Alpha = alpha_val,
+              nfolds = nfolds_val,
+
+              Lambda_min = lambda_min,
+              Lambda_1se = lambda_1se,
+              CV_MSE = cv_mse,
+
+              Baseline_R2 = baseline_metrics$R2,
+              ElasticNet_R2 = elastic_metrics$R2,
+
+              Delta_R2 =
+                elastic_metrics$R2 -
+                baseline_metrics$R2,
+
+              Baseline_RMSE = baseline_metrics$RMSE,
+              ElasticNet_RMSE = elastic_metrics$RMSE,
+
+              # Positive means improved prediction.
+              Delta_RMSE =
+                baseline_metrics$RMSE -
+                elastic_metrics$RMSE,
+
+              Baseline_MAE = baseline_metrics$MAE,
+              ElasticNet_MAE = elastic_metrics$MAE,
+
+              Delta_MAE =
+                baseline_metrics$MAE -
+                elastic_metrics$MAE,
+
+              Test_Shapiro_baseline =
+                baseline_test_shapiro,
+
+              Test_Shapiro_full =
+                calculate_shapiro(y_test - predictions),
+
+              Selected_predictors = selected_predictors,
+
+              Selected_biomarkers =
+                length(selected_biomarkers),
+
+              Signature_predictors =
+                length(all_predictors),
+
+              Biomarker_panel = paste(
+                selected_biomarkers,
+                collapse = "; "
+              ),
+
+              Signature = paste(
+                all_predictors,
+                collapse = "; "
+              ),
+
+              stringsAsFactors = FALSE
+            )
+
+
+          ##################################################
+          ######## Store coefficients ######################
+          ##################################################
+
+          mandatory_flags <- c(
+            FALSE,
+            design_source %in% main_predictors
+          )
+
+          coef_df <- data.frame(
+            Seed = seed,
+            Response = response_col,
+            Alpha = alpha_val,
+            nfolds = nfolds_val,
+
+            Variable = coef_names,
+
+            Original_variable = c(
+              "(Intercept)",
+              design_source
+            ),
+
+            Coefficient = as.numeric(coef_vector),
+
+            Nonzero = coef_vector != 0,
+
+            Mandatory = mandatory_flags,
+
+            Selected =
+              (coef_vector != 0) | mandatory_flags,
+
+            stringsAsFactors = FALSE
+          )
+
+          coef_list[[length(coef_list) + 1L]] <- coef_df
+
+
+          ##################################################
+          ######## Store selected variables ################
+          ##################################################
+
+          selected_df <-
+            coef_df %>%
+
+            filter(
+              Variable != "(Intercept)",
+              Selected
+            ) %>%
+
+            transmute(
+              Seed,
+              Response,
+              Alpha,
+              nfolds,
+              Variable,
+              Original_variable,
+              Mandatory
+            )
+
+          selected_variables_list[[
+            length(selected_variables_list) + 1L
+          ]] <- selected_df
+
+          # Include unselected biomarkers too, so selection
+          # frequencies can explicitly be zero.
+          biomarker_selection_list[[
+            length(biomarker_selection_list) + 1L
+          ]] <-
+            data.frame(
+              Seed = seed,
+              Response = response_col,
+              Alpha = alpha_val,
+              nfolds = nfolds_val,
+              Biomarker = biomarker_names,
+
+              Selected =
+                biomarker_names %in% selected_biomarkers,
+
+              Eligible =
+                biomarker_names %in% active_biomarkers
+            )
+
+
+          ##################################################
+          ######## Store Elastic Net predictions ###########
+          ##################################################
+
+          prediction_key <- paste(
+            seed,
+            response_col,
+            alpha_val,
+            nfolds_val,
+            sep = "_"
+          )
+
+          elastic_prediction_storage[[prediction_key]] <-
+            list(
+              observed = y_test,
+              predicted = predictions,
+              baseline = baseline_predictions,
+              row_id = test_data$row_id,
+              r2 = elastic_metrics$R2,
+              rmse = elastic_metrics$RMSE,
+              seed = seed,
+              response = response_col,
+              alpha = alpha_val,
+              nfolds = nfolds_val
+            )
+
+
+          ##################################################
+          ############### De novo linear refit #############
+          ##################################################
+
+          # Mapping through model.matrix assignments replaces
+          # prefix matching of factor dummy names.
+          predictor_vars <- selected_biomarkers
+
+          full_formula <- make_linear_formula(
+            response = response_col,
+            predictors = all_predictors
+          )
+
+
+          ##################################################
+          ################ Fit full OLS model ##############
+          ##################################################
+
+          refit_attempt <- tryCatch({
+
+            full_lm <- lm(
+              formula = full_formula,
+              data = train_data,
+              weights = sample_weights,
+              na.action = na.fail
+            )
+
+            check_lm_fit(full_lm)
+
+            full_predictions <- as.numeric(
+              predict(
+                full_lm,
+                newdata = test_data
+              )
+            )
+
+            full_metrics <- calculate_regression_metrics(
+              actual = y_test,
+              predicted = full_predictions
+            )
+
+            full_train_diagnostics <- get_lm_diagnostics(
+              full_lm
+            )
+
+
+            ################################################
+            ################ ANOVA F test ##################
+            ################################################
+
+            if (length(selected_biomarkers) == 0) {
+
+              # Baseline and full formulas are identical.
+              anova_p <- NA_real_
+
+              anova_f <- NA_real_
+
+            } else {
+
+              anova_result <- anova(
+                baseline_lm,
+                full_lm,
+                test = "F"
+              )
+
+              anova_p <- anova_result$`Pr(>F)`[2]
+
+              anova_f <- anova_result$F[2]
+            }
+
+
+            ################################################
+            ############ Model coefficients ################
+            ################################################
+
+            tidy_model <-
+              broom::tidy(full_lm) %>%
+
+              mutate(
+                # statistic is a t statistic for lm().
+                FDR = p.adjust(
+                  p.value,
+                  method = "fdr"
+                ),
+
+                Seed = seed,
+                Response = response_col,
+                Alpha = alpha_val,
+                nfolds = nfolds_val
+              )
+
+            list(
+              ok = TRUE,
+              reason = "",
+              predictions = full_predictions,
+              metrics = full_metrics,
+              diagnostics = full_train_diagnostics,
+              anova_p = anova_p,
+              anova_f = anova_f,
+              coefficients = tidy_model
+            )
+
+          }, error = function(e) {
+
+            list(
+              ok = FALSE,
+              reason = conditionMessage(e)
+            )
+          })
+
+
+          ##################################################
+          ############ Record failed refits ################
+          ##################################################
+
+          if (!refit_attempt$ok) {
+
+            failure_list[[length(failure_list) + 1L]] <-
+              data.frame(
+                Seed = seed,
+                Response = response_col,
+                Alpha = alpha_val,
+                nfolds = nfolds_val,
+                Stage = "De_novo_OLS",
+                Reason = refit_attempt$reason
+              )
+
+            # Preserve the panel and failure in the results.
+            # Do not invent OLS inference for a singular model.
+            full_predictions <- rep(
+              NA_real_,
+              length(y_test)
+            )
+
+            full_metrics <- list(
+              R2 = NA_real_,
+              RMSE = NA_real_,
+              MAE = NA_real_
+            )
+
+            full_train_diagnostics <- setNames(
+              rep(
+                NA_real_,
+                length(baseline_train_diagnostics)
+              ),
+              names(baseline_train_diagnostics)
+            )
+
+            anova_p <- NA_real_
+
+            anova_f <- NA_real_
+
+          } else {
+
+            full_predictions <- refit_attempt$predictions
+
+            full_metrics <- refit_attempt$metrics
+
+            full_train_diagnostics <-
+              refit_attempt$diagnostics
+
+            anova_p <- refit_attempt$anova_p
+
+            anova_f <- refit_attempt$anova_f
+
+            refit_coef_list[[
+              length(refit_coef_list) + 1L
+            ]] <- refit_attempt$coefficients
+          }
+
+
+          ##################################################
+          ######## Store refitted predictions ##############
+          ##################################################
+
+          refit_prediction_storage[[prediction_key]] <-
+            list(
+              observed = y_test,
+              predicted = full_predictions,
+              baseline = baseline_predictions_lm,
+              row_id = test_data$row_id,
+              r2 = full_metrics$R2,
+              rmse = full_metrics$RMSE,
+              seed = seed,
+              response = response_col,
+              alpha = alpha_val,
+              nfolds = nfolds_val,
+              status = if (refit_attempt$ok) "ok" else "failed",
+              panel = selected_biomarkers
+            )
+
+
+          ##################################################
+          ######## Store refitted performance ##############
+          ##################################################
+
+          refit_results_list[[
+            length(refit_results_list) + 1L
+          ]] <-
+            data.frame(
+              Seed = seed,
+              Response = response_col,
+              Alpha = alpha_val,
+              nfolds = nfolds_val,
+
+              Status = if (refit_attempt$ok) {
+                "ok"
+              } else {
+                "failed"
+              },
+
+              Failure_reason = refit_attempt$reason,
+
+              Baseline_R2 = baseline_metrics_lm$R2,
+              Refit_R2 = full_metrics$R2,
+
+              Delta_R2 =
+                full_metrics$R2 -
+                baseline_metrics_lm$R2,
+
+              Baseline_RMSE = baseline_metrics_lm$RMSE,
+              Refit_RMSE = full_metrics$RMSE,
+
+              Delta_RMSE =
+                baseline_metrics_lm$RMSE -
+                full_metrics$RMSE,
+
+              Baseline_MAE = baseline_metrics_lm$MAE,
+              Refit_MAE = full_metrics$MAE,
+
+              Delta_MAE =
+                baseline_metrics_lm$MAE -
+                full_metrics$MAE,
+
+              ANOVA_F = anova_f,
+              ANOVA_p = anova_p,
+
+              Test_Shapiro_baseline =
+                baseline_test_shapiro_lm,
+
+              Test_Shapiro_full =
+                calculate_shapiro(
+                  y_test - full_predictions
+                ),
+
+              Train_R2_baseline =
+                unname(baseline_train_diagnostics["R2"]),
+
+              Train_R2_full =
+                unname(full_train_diagnostics["R2"]),
+
+              Train_Adjusted_R2_baseline =
+                unname(
+                  baseline_train_diagnostics["Adjusted_R2"]
+                ),
+
+              Train_Adjusted_R2_full =
+                unname(
+                  full_train_diagnostics["Adjusted_R2"]
+                ),
+
+              Train_RMSE_baseline =
+                unname(baseline_train_diagnostics["RMSE"]),
+
+              Train_RMSE_full =
+                unname(full_train_diagnostics["RMSE"]),
+
+              Train_AIC_baseline =
+                unname(baseline_train_diagnostics["AIC"]),
+
+              Train_AIC_full =
+                unname(full_train_diagnostics["AIC"]),
+
+              Train_BIC_baseline =
+                unname(baseline_train_diagnostics["BIC"]),
+
+              Train_BIC_full =
+                unname(full_train_diagnostics["BIC"]),
+
+              Train_Shapiro_baseline =
+                unname(baseline_train_diagnostics["Shapiro"]),
+
+              Train_Shapiro_full =
+                unname(full_train_diagnostics["Shapiro"]),
+
+              # Preserve the original meaning:
+              # number of added biomarkers, excluding mandatory terms.
+              Number_predictors =
+                length(selected_biomarkers),
+
+              Signature_predictors =
+                length(all_predictors),
+
+              Selected_biomarkers = paste(
+                selected_biomarkers,
+                collapse = "; "
+              ),
+
+              Signature = paste(
+                all_predictors,
+                collapse = "; "
+              ),
+
+              stringsAsFactors = FALSE
+            )
+
+        }, error = function(e) {
+
+          failure_list[[length(failure_list) + 1L]] <<-
+            data.frame(
+              Seed = seed,
+              Response = response_col,
+              Alpha = alpha_val,
+              nfolds = nfolds_val,
+              Stage = "Elastic_net",
+              Reason = conditionMessage(e)
+            )
+
+          message(
+            "Failed: seed ",
+            seed,
+            ", alpha ",
+            alpha_val,
+            ", folds ",
+            nfolds_val,
+            ": ",
+            conditionMessage(e)
+          )
+        })
+
+      } # End alpha loop
+
+    } # End nfolds loop
+
+  } # End seed loop
+
+}, warning = capture_warning)
+
+
+############################################################
+################ Combine all results #######################
+############################################################
+
+results <- bind_rows(results_list)
+
+coefficients_df <- bind_rows(coef_list)
+
+selected_variables <- bind_rows(
+  selected_variables_list
+)
+
+biomarker_selection <- bind_rows(
+  biomarker_selection_list
+)
+
+baseline_results <- bind_rows(
+  baseline_results_list
+)
+
+baseline_coefficients_df <- bind_rows(
+  baseline_coef_list
+)
+
+design_mapping <- bind_rows(
+  design_mapping_list
+)
+
+failed_models_elastic <- bind_rows(
+  failure_list
+)
+
+if (nrow(results) == 0) {
+  print(failed_models_elastic)
+  stop("No elastic-net models were successfully fitted.")
+}
+
+
+############################################################
+############### Variable selection frequency ###############
+############################################################
+
+# Design-column frequency, retaining the original structure.
+selection_frequency <-
+  selected_variables %>%
+
+  group_by(
+    Response,
+    Alpha,
+    nfolds,
+    Variable,
+    Original_variable,
+    Mandatory
+  ) %>%
+
+  summarise(
+    Selected_splits = n_distinct(Seed),
+
+    Selection_frequency =
+      100 * n_distinct(Seed) / n_seeds,
+
+    .groups = "drop"
+  )
+
+
+# Biomarker-only frequencies, including zero-selection markers.
+biomarker_selection_frequency <-
+  biomarker_selection %>%
+
+  group_by(
+    Response,
+    Alpha,
+    nfolds,
+    Biomarker
+  ) %>%
+
+  summarise(
+    Successful_EN_fits = n_distinct(Seed),
+
+    Eligible_splits = sum(Eligible),
+
+    Selected_splits = sum(Selected),
+
+    Selection_frequency =
+      100 * sum(Selected) / n_seeds,
+
+    .groups = "drop"
+  )
+
+
+############################################################
+############ Combine de novo refitting results #############
+############################################################
+
+refit_results <- bind_rows(
+  refit_results_list
+)
+
+refit_coefficients <- bind_rows(
+  refit_coef_list
+)
+
+refit_baseline_coefficients <- bind_rows(
+  refit_baseline_coef_list
+)
+
+
+############################################################
+############### De novo summary ############################
+############################################################
+
+# Count failures explicitly. Performance summaries below use
+# successful refits, with matched baseline/full observations.
+refit_counts <- refit_results %>%
+
+  group_by(
+    Response,
+    Alpha,
+    nfolds
+  ) %>%
+
+  summarise(
+    Attempted_refits = n(),
+
+    Successful_refits = sum(Status == "ok"),
+
+    Failed_refits = sum(Status != "ok"),
+
+    Successful_refit_percent =
+      100 * sum(Status == "ok") / n_seeds,
+
+    .groups = "drop"
+  )
+
+
+refit_performance_summary <-
+  refit_results %>%
+
+  filter(Status == "ok") %>%
+
+  group_by(
+    Response,
+    Alpha,
+    nfolds
+  ) %>%
+
+  summarise(
+    Valid_R2_splits = sum(is.finite(Refit_R2)),
+
+    Mean_Baseline_R2 = safe_mean(Baseline_R2),
+
+    Lower95_Baseline =
+      safe_quantile(Baseline_R2, 0.025),
+
+    Upper95_Baseline =
+      safe_quantile(Baseline_R2, 0.975),
+
+    Mean_Refit_R2 = safe_mean(Refit_R2),
+
+    Lower95_Refit =
+      safe_quantile(Refit_R2, 0.025),
+
+    Upper95_Refit =
+      safe_quantile(Refit_R2, 0.975),
+
+    Mean_Delta_R2 = safe_mean(Delta_R2),
+
+    Lower95_Delta =
+      safe_quantile(Delta_R2, 0.025),
+
+    Upper95_Delta =
+      safe_quantile(Delta_R2, 0.975),
+
+    Mean_Baseline_RMSE = safe_mean(Baseline_RMSE),
+
+    Mean_Refit_RMSE = safe_mean(Refit_RMSE),
+
+    Lower95_Refit_RMSE =
+      safe_quantile(Refit_RMSE, 0.025),
+
+    Upper95_Refit_RMSE =
+      safe_quantile(Refit_RMSE, 0.975),
+
+    Mean_Delta_RMSE = safe_mean(Delta_RMSE),
+
+    Lower95_Delta_RMSE =
+      safe_quantile(Delta_RMSE, 0.025),
+
+    Upper95_Delta_RMSE =
+      safe_quantile(Delta_RMSE, 0.975),
+
+    Mean_Baseline_MAE = safe_mean(Baseline_MAE),
+
+    Mean_Refit_MAE = safe_mean(Refit_MAE),
+
+    Mean_Delta_MAE = safe_mean(Delta_MAE),
+
+    Median_ANOVA = safe_median(ANOVA_p),
+
+    # Percentage of ALL requested splits.
+    Significant_ANOVA =
+      100 * sum(ANOVA_p < 0.05, na.rm = TRUE) / n_seeds,
+
+    Mean_Selected = safe_mean(Number_predictors),
+
+    SD_Selected = safe_sd(Number_predictors),
+
+    across(
+      c(
+        Train_R2_baseline,
+        Train_R2_full,
+        Train_Adjusted_R2_baseline,
+        Train_Adjusted_R2_full,
+        Train_RMSE_baseline,
+        Train_RMSE_full,
+        Train_AIC_baseline,
+        Train_AIC_full,
+        Train_BIC_baseline,
+        Train_BIC_full
+      ),
+      safe_mean,
+      .names = "Mean_{.col}"
+    ),
+
+    across(
+      c(
+        Train_Shapiro_baseline,
+        Train_Shapiro_full,
+        Test_Shapiro_baseline,
+        Test_Shapiro_full
+      ),
+      safe_median,
+      .names = "Median_{.col}"
+    ),
+
+    .groups = "drop"
+  )
+
+
+refit_summary <-
+  refit_counts %>%
+
+  left_join(
+    refit_performance_summary,
+    by = c("Response", "Alpha", "nfolds")
+  ) %>%
+
+  arrange(
+    desc(Mean_Refit_R2),
+    desc(Mean_Delta_R2)
+  )
+
+
+############################################################
+############### Refit coefficient summary ##################
+############################################################
+
+if (nrow(refit_coefficients) > 0) {
+
+  refit_coefficients_summary <-
+    refit_coefficients %>%
+
+    group_by(
+      Response,
+      Alpha,
+      nfolds,
+      term
+    ) %>%
+
+    summarise(
+      Estimated_splits = n_distinct(Seed),
+
+      Mean_Beta = safe_mean(estimate),
+
+      SD_Beta = safe_sd(estimate),
+
+      Lower95_Beta =
+        safe_quantile(estimate, 0.025),
+
+      Upper95_Beta =
+        safe_quantile(estimate, 0.975),
+
+      Mean_SE = safe_mean(std.error),
+
+      Mean_t = safe_mean(statistic),
+
+      Median_p = safe_median(p.value),
+
+      Mean_FDR = safe_mean(FDR),
+
+      Significant_frequency =
+        sum(p.value < 0.05, na.rm = TRUE),
+
+      Significant_percent =
+        100 * sum(p.value < 0.05, na.rm = TRUE) / n_seeds,
+
+      FDR_Significant_frequency =
+        sum(FDR < 0.05, na.rm = TRUE),
+
+      FDR_Significant_percent =
+        100 * sum(FDR < 0.05, na.rm = TRUE) / n_seeds,
+
+      .groups = "drop"
+    )
+
+} else {
+
+  refit_coefficients_summary <- tibble()
+}
+
+
+############################################################
+################ Performance summary #######################
+############################################################
+
+summary_results <-
+  results %>%
+
+  group_by(
+    Response,
+    Alpha,
+    nfolds
+  ) %>%
+
+  summarise(
+    Successful_splits = n_distinct(Seed),
+
+    Valid_R2_splits =
+      sum(is.finite(ElasticNet_R2)),
+
+    Mean_R2 = safe_mean(ElasticNet_R2),
+
+    Lower95_R2 =
+      safe_quantile(ElasticNet_R2, 0.025),
+
+    Upper95_R2 =
+      safe_quantile(ElasticNet_R2, 0.975),
+
+    Mean_Baseline_R2 = safe_mean(Baseline_R2),
+
+    Lower95_Baseline =
+      safe_quantile(Baseline_R2, 0.025),
+
+    Upper95_Baseline =
+      safe_quantile(Baseline_R2, 0.975),
+
+    Mean_Delta_R2 = safe_mean(Delta_R2),
+
+    Lower95_Delta =
+      safe_quantile(Delta_R2, 0.025),
+
+    Upper95_Delta =
+      safe_quantile(Delta_R2, 0.975),
+
+    Mean_RMSE = safe_mean(ElasticNet_RMSE),
+
+    Lower95_RMSE =
+      safe_quantile(ElasticNet_RMSE, 0.025),
+
+    Upper95_RMSE =
+      safe_quantile(ElasticNet_RMSE, 0.975),
+
+    Mean_Baseline_RMSE = safe_mean(Baseline_RMSE),
+
+    Mean_Delta_RMSE = safe_mean(Delta_RMSE),
+
+    Lower95_Delta_RMSE =
+      safe_quantile(Delta_RMSE, 0.025),
+
+    Upper95_Delta_RMSE =
+      safe_quantile(Delta_RMSE, 0.975),
+
+    Mean_MAE = safe_mean(ElasticNet_MAE),
+
+    Mean_Baseline_MAE = safe_mean(Baseline_MAE),
+
+    Mean_Delta_MAE = safe_mean(Delta_MAE),
+
+    Mean_CV_MSE = safe_mean(CV_MSE),
+
+    Mean_Lambda_min = safe_mean(Lambda_min),
+
+    SD_Lambda_min = safe_sd(Lambda_min),
+
+    Mean_Lambda_1se = safe_mean(Lambda_1se),
+
+    SD_Lambda_1se = safe_sd(Lambda_1se),
+
+    # Biomarker count, excluding mandatory predictors.
+    Mean_Selected = safe_mean(Selected_biomarkers),
+
+    SD_Selected = safe_sd(Selected_biomarkers),
+
+    # Signature size measured as design columns.
+    Mean_Selected_predictors =
+      safe_mean(Selected_predictors),
+
+    Median_Test_Shapiro_baseline =
+      safe_median(Test_Shapiro_baseline),
+
+    Median_Test_Shapiro_full =
+      safe_median(Test_Shapiro_full),
+
+    .groups = "drop"
+  )
+
+
+############################################################
+################ Sort models ###############################
+############################################################
+
+# Descriptive ordering only.
+# Do not use held-out R² to select the tuned model.
+summary_results <-
+  summary_results %>%
+
+  arrange(
+    desc(Mean_R2),
+    desc(Mean_Delta_R2),
+    Mean_Selected
+  )
+
+
+############################################################
+############ Select configurations by training CV ##########
+############################################################
+
+# Select alpha/fold setting independently within each split,
+# using internal training CV MSE only.
+best_models_cv <-
+  results %>%
+
+  group_by(
+    Response,
+    Seed
+  ) %>%
+
+  arrange(
+    CV_MSE,
+    Alpha,
+    nfolds,
+    .by_group = TRUE
+  ) %>%
+
+  slice_head(n = 1) %>%
+
+  ungroup()
+
+
+best_model_keys <-
+  best_models_cv %>%
+
+  select(
+    Response,
+    Seed,
+    Alpha,
+    nfolds
+  )
+
+
+best_models_refit <-
+  refit_results %>%
+
+  inner_join(
+    best_model_keys,
+    by = c("Response", "Seed", "Alpha", "nfolds")
+  )
+
+
+best_models_cv_summary <-
+  best_models_cv %>%
+
+  group_by(Response) %>%
+
+  summarise(
+    Successful_splits = n_distinct(Seed),
+
+    Mean_R2 = safe_mean(ElasticNet_R2),
+
+    Lower95_R2 =
+      safe_quantile(ElasticNet_R2, 0.025),
+
+    Upper95_R2 =
+      safe_quantile(ElasticNet_R2, 0.975),
+
+    Mean_Delta_R2 = safe_mean(Delta_R2),
+
+    Mean_RMSE = safe_mean(ElasticNet_RMSE),
+
+    Mean_Delta_RMSE = safe_mean(Delta_RMSE),
+
+    Mean_MAE = safe_mean(ElasticNet_MAE),
+
+    Mean_Selected = safe_mean(Selected_biomarkers),
+
+    .groups = "drop"
+  )
+
+
+############################################################
+################ Display warnings ##########################
+############################################################
+
+warnings <- unique(warnings)
+
+if (length(warnings) > 0) {
+
+  cat(
+    '<details><summary style="font-size:1.2em;"><strong>',
+    length(warnings),
+    ' unique warning(s) encountered during the analysis',
+    '</strong></summary>'
+  )
+
+  cat('<div style="margin-left:20px;margin-top:10px;">')
+
+  for (warn in warnings) {
+
+    cat(
+      "<p>",
+      as.character(htmltools::htmlEscape(warn)),
+      "</p>"
+    )
+  }
+
+  cat("</div></details><br>")
+
+} else {
+
+  cat(
+    "No warnings were encountered during the analysis.<br>"
+  )
+}
+
+
+############################################################
+################ Display fitting failures ##################
+############################################################
+
+if (nrow(failed_models_elastic) > 0) {
+
+  cat(
+    '<details><summary style="font-size:1.2em;"><strong>',
+    nrow(failed_models_elastic),
+    ' model-fitting failure(s)',
+    '</strong></summary>'
+  )
+
+  cat('<div style="margin-left:20px;margin-top:10px;">')
+
+  print(
+    kable(
+      failed_models_elastic,
+      format = "html",
+      escape = TRUE,
+      row.names = FALSE
+    )
+  )
+
+  cat("</div></details><br>")
+}
+
+
+```
+
+
+
+## Obtaining the optimal lambda and the R2 (performance) of each regression model under different alpha values in elastic net
+
+Here is shown the previously described performance of the model generated by machine learning, as well as the performance of the "machine learning basemodel". 
+
+```{r results='asis'}
+
+
+############################################################
+################ Elastic Net summary tables ################
+############################################################
+
+library(knitr)
+library(kableExtra)
+library(writexl)
+library(dplyr)
+
+output_directory <-
+  "Machine Learning Models comparison and summary"
+
+dir.create(
+  output_directory,
+  showWarnings = FALSE
+)
+
+
+############################################################
+################ Display helpers ###########################
+############################################################
+
+escape_html <- function(x) {
+  as.character(
+    htmltools::htmlEscape(as.character(x))
+  )
+}
+
+
+format_empirical_range <- function(mean_value, lower, upper) {
+
+  ifelse(
+    is.finite(mean_value) &
+      is.finite(lower) &
+      is.finite(upper),
+
+    sprintf(
+      "%.3f (%.3f–%.3f)",
+      mean_value,
+      lower,
+      upper
+    ),
+
+    "—"
+  )
+}
+
+
+format_mean_sd <- function(mean_value, sd_value, digits = 3) {
+
+  pattern <- paste0(
+    "%.",
+    digits,
+    "f ± %.",
+    digits,
+    "f"
+  )
+
+  ifelse(
+    is.finite(mean_value) & is.finite(sd_value),
+
+    sprintf(
+      pattern,
+      mean_value,
+      sd_value
+    ),
+
+    "—"
+  )
+}
+
+
+print_summary_table <- function(table, caption) {
+
+  kable(
+    table,
+
+    format = "html",
+
+    digits = 3,
+
+    caption = caption,
+
+    align = "c",
+
+    escape = TRUE
+  ) %>%
+
+    kable_styling(
+      bootstrap_options = c(
+        "striped",
+        "hover",
+        "condensed",
+        "responsive"
+      ),
+
+      full_width = FALSE,
+
+      position = "center"
+    ) %>%
+
+    row_spec(
+      0,
+      bold = TRUE,
+      color = "white",
+      background = "black"
+    ) %>%
+
+    print()
+}
+
+
+############################################################
+################ Loop over responses #######################
+############################################################
+
+response_names <- unique(summary_results$Response)
+
+for (response_index in seq_along(response_names)) {
+
+  response_col <- response_names[response_index]
+
+  # Safe HTML IDs independent of response-variable names.
+  response_id <- paste0(
+    "linear_en_response_",
+    response_index
+  )
+
+  # Prefix prevents collisions between sanitized response names.
+  response_file_prefix <- paste0(
+    "Response_",
+    response_index,
+    "_",
+    gsub(
+      "[^[:alnum:]_-]",
+      "_",
+      response_col
+    )
+  )
+
+
+  ##########################################################
+  ################ Response collapsible ####################
+  ##########################################################
+
+  cat(
+    paste0(
+      '<div class="panel panel-default">',
+      '<div class="panel-heading">',
+      '<h4 class="panel-title">',
+      '<a data-toggle="collapse" href="#',
+      response_id,
+      '">',
+      'Elastic Net Results for Response: ',
+      escape_html(response_col),
+      '</a>',
+      '</h4>',
+      '</div>',
+      '<div id="',
+      response_id,
+      '" class="panel-collapse collapse">',
+      '<div class="panel-body">'
+    )
+  )
+
+
+  ##########################################################
+  ################ Loop over nfolds ########################
+  ##########################################################
+
+  response_folds <-
+    summary_results %>%
+    filter(Response == response_col) %>%
+    pull(nfolds) %>%
+    unique() %>%
+    sort()
+
+
+  for (nfolds_val in response_folds) {
+
+    fold_id <- paste0(
+      response_id,
+      "_folds_",
+      nfolds_val
+    )
+
+
+    ########################################################
+    ################ Inner collapsible #####################
+    ########################################################
+
+    cat(
+      paste0(
+        '<div class="panel panel-default">',
+        '<div class="panel-heading">',
+        '<h5 class="panel-title">',
+        '<a data-toggle="collapse" href="#',
+        fold_id,
+        '">',
+        'Results for nfolds = ',
+        nfolds_val,
+        '</a>',
+        '</h5>',
+        '</div>',
+        '<div id="',
+        fold_id,
+        '" class="panel-collapse collapse">',
+        '<div class="panel-body">'
+      )
+    )
+
+    cat(
+      paste0(
+        "<p><small>",
+        "Ranges in parentheses are the 2.5th–97.5th ",
+        "percentiles across splits, not confidence intervals. ",
+        "Positive ΔR² and RMSE improvement indicate better ",
+        "test prediction. Values shown as ± are mean ± SD ",
+        "across splits.",
+        "</small></p>"
+      )
+    )
+
+
+    ########################################################
+    ################ Summary table #########################
+    ########################################################
+
+    response_summary <-
+      summary_results %>%
+
+      filter(
+        Response == response_col,
+        nfolds == nfolds_val
+      )
+
+
+    summary_file <- file.path(
+      output_directory,
+
+      paste0(
+        response_file_prefix,
+        "_nfolds_",
+        nfolds_val,
+        "_ElasticNet_summary.xlsx"
+      )
+    )
+
+
+    # Export the complete numeric summary.
+    write_xlsx(
+      response_summary,
+      summary_file
+    )
+
+
+    cat(
+      paste0(
+        '<a href="',
+        escape_html(summary_file),
+        '" download>',
+        'Download Elastic Net summary as Excel',
+        '</a><br><br>'
+      )
+    )
+
+
+    ########################################################
+    ########### HTML version of summary table ##############
+    ########################################################
+
+    response_summary_html <-
+      response_summary %>%
+
+      mutate(
+
+        R2 = format_empirical_range(
+          Mean_R2,
+          Lower95_R2,
+          Upper95_R2
+        ),
+
+        Baseline_R2 = format_empirical_range(
+          Mean_Baseline_R2,
+          Lower95_Baseline,
+          Upper95_Baseline
+        ),
+
+        Delta_R2 = format_empirical_range(
+          Mean_Delta_R2,
+          Lower95_Delta,
+          Upper95_Delta
+        ),
+
+        RMSE = format_empirical_range(
+          Mean_RMSE,
+          Lower95_RMSE,
+          Upper95_RMSE
+        ),
+
+        Delta_RMSE = format_empirical_range(
+          Mean_Delta_RMSE,
+          Lower95_Delta_RMSE,
+          Upper95_Delta_RMSE
+        ),
+
+        Lambda_min = format_mean_sd(
+          Mean_Lambda_min,
+          SD_Lambda_min
+        ),
+
+        Lambda_1se = format_mean_sd(
+          Mean_Lambda_1se,
+          SD_Lambda_1se
+        ),
+
+        Selected_biomarkers = format_mean_sd(
+          Mean_Selected,
+          SD_Selected,
+          digits = 2
+        )
+
+      ) %>%
+
+      select(
+        Response,
+        Alpha,
+        nfolds,
+
+        Successful_splits,
+        Valid_R2_splits,
+
+        Baseline_R2,
+        R2,
+        Delta_R2,
+
+        Mean_Baseline_RMSE,
+        RMSE,
+        Delta_RMSE,
+
+        Mean_MAE,
+
+        Mean_CV_MSE,
+
+        Lambda_min,
+        Lambda_1se,
+
+        Selected_biomarkers
+      ) %>%
+
+      rename(
+        `Successful splits` = Successful_splits,
+        `Valid R² splits` = Valid_R2_splits,
+
+        `Baseline test R²` = Baseline_R2,
+        `Elastic Net test R²` = R2,
+        `ΔR²` = Delta_R2,
+
+        `Mean baseline RMSE` = Mean_Baseline_RMSE,
+        `Elastic Net RMSE` = RMSE,
+        `RMSE improvement` = Delta_RMSE,
+
+        `Mean MAE` = Mean_MAE,
+
+        `Mean CV MSE` = Mean_CV_MSE,
+
+        `λmin ± SD` = Lambda_min,
+        `λ1se ± SD` = Lambda_1se,
+
+        `Selected biomarkers ± SD` = Selected_biomarkers
+      )
+
+
+    print_summary_table(
+      response_summary_html,
+
+      caption = paste(
+        "Elastic Net performance summary for",
+        response_col,
+        "(nfolds =",
+        nfolds_val,
+        ")"
+      )
+    )
+
+
+    cat(
+      paste0(
+        "<p><small>",
+        "The comparator is the mandatory-only Ridge model. ",
+        "Selected biomarker counts exclude mandatory predictors. ",
+        "All models use λmin; λ1se is reported for reference. ",
+        "Test-performance ordering is descriptive; ",
+        "configuration selection uses training CV MSE.",
+        "</small></p>"
+      )
+    )
+
+
+    ########################################################
+    ################ De novo summary #######################
+    ########################################################
+
+    refit_table <-
+      refit_summary %>%
+
+      filter(
+        Response == response_col,
+        nfolds == nfolds_val
+      )
+
+
+    if (nrow(refit_table) == 0) {
+
+      cat(
+        "<p>No de-novo refit results are available for this setting.</p>"
+      )
+
+    } else {
+
+      refit_file <- file.path(
+        output_directory,
+
+        paste0(
+          response_file_prefix,
+          "_nfolds_",
+          nfolds_val,
+          "_Refitted_model_summary.xlsx"
+        )
+      )
+
+
+      write_xlsx(
+        refit_table,
+        refit_file
+      )
+
+
+      cat(
+        paste0(
+          '<br><a href="',
+          escape_html(refit_file),
+          '" download>',
+          'Download Refitted Model Summary as Excel',
+          '</a><br><br>'
+        )
+      )
+
+
+      refit_table_html <-
+        refit_table %>%
+
+        mutate(
+
+          Baseline_R2 = format_empirical_range(
+            Mean_Baseline_R2,
+            Lower95_Baseline,
+            Upper95_Baseline
+          ),
+
+          Refit_R2 = format_empirical_range(
+            Mean_Refit_R2,
+            Lower95_Refit,
+            Upper95_Refit
+          ),
+
+          Delta_R2 = format_empirical_range(
+            Mean_Delta_R2,
+            Lower95_Delta,
+            Upper95_Delta
+          ),
+
+          Refit_RMSE = format_empirical_range(
+            Mean_Refit_RMSE,
+            Lower95_Refit_RMSE,
+            Upper95_Refit_RMSE
+          ),
+
+          Delta_RMSE = format_empirical_range(
+            Mean_Delta_RMSE,
+            Lower95_Delta_RMSE,
+            Upper95_Delta_RMSE
+          ),
+
+          Significant_ANOVA = ifelse(
+            is.finite(Significant_ANOVA),
+
+            sprintf(
+              "%.1f%%",
+              Significant_ANOVA
+            ),
+
+            "—"
+          ),
+
+          Selected_biomarkers = format_mean_sd(
+            Mean_Selected,
+            SD_Selected,
+            digits = 2
+          )
+
+        ) %>%
+
+        select(
+          Response,
+          Alpha,
+          nfolds,
+
+          Attempted_refits,
+          Successful_refits,
+          Failed_refits,
+
+          Baseline_R2,
+          Refit_R2,
+          Delta_R2,
+
+          Mean_Baseline_RMSE,
+          Refit_RMSE,
+          Delta_RMSE,
+
+          Mean_Refit_MAE,
+
+          Median_ANOVA,
+          Significant_ANOVA,
+
+          Selected_biomarkers
+        ) %>%
+
+        rename(
+          `Attempted refits` = Attempted_refits,
+          `Successful refits` = Successful_refits,
+          `Failed refits` = Failed_refits,
+
+          `Baseline test R²` = Baseline_R2,
+          `Refit test R²` = Refit_R2,
+          `ΔR²` = Delta_R2,
+
+          `Mean baseline RMSE` = Mean_Baseline_RMSE,
+          `Refit RMSE` = Refit_RMSE,
+          `RMSE improvement` = Delta_RMSE,
+
+          `Mean refit MAE` = Mean_Refit_MAE,
+
+          `Median ANOVA p` = Median_ANOVA,
+          `Significant ANOVA (%)` = Significant_ANOVA,
+
+          `Selected biomarkers ± SD` = Selected_biomarkers
+        )
+
+
+      print_summary_table(
+        refit_table_html,
+
+        caption = paste(
+          "Refitted linear model performance summary for",
+          response_col,
+          "(nfolds =",
+          nfolds_val,
+          ")"
+        )
+      )
+
+
+      cat(
+        paste0(
+          "<p><small>",
+          "The comparator is the mandatory-only ordinary linear model. ",
+          "Performance summaries include successful refits only, ",
+          "using matched baseline/full-model comparisons. ",
+          "Significant ANOVA is the percentage of all ",
+          n_seeds,
+          " requested splits with ANOVA p &lt; 0.05. ",
+          "Training adjusted R², AIC and BIC are included ",
+          "in the full Excel export.",
+          "</small></p>"
+        )
+      )
+    }
+
+
+    ########################################################
+    ############ Refitted coefficient summary ##############
+    ########################################################
+
+    # A completely empty coefficient table is possible if
+    # every OLS refit failed.
+    if (nrow(refit_coefficients_summary) == 0) {
+
+      cat(
+        "<p>No estimable de-novo coefficient summaries are available.</p>"
+      )
+
+    } else {
+
+      coef_summary_raw <-
+        refit_coefficients_summary %>%
+
+        filter(
+          Response == response_col,
+          nfolds == nfolds_val
+        )
+
+
+      if (nrow(coef_summary_raw) == 0) {
+
+        cat(
+          "<p>No estimable de-novo coefficients are available for this setting.</p>"
+        )
+
+      } else {
+
+        ####################################################
+        ######## Prepare coefficient selection lookup #####
+        ####################################################
+
+        # model.matrix() and lm() may differ in backtick
+        # presentation for nonstandard variable names.
+        # Normalize only for joining; preserve displayed names.
+        selection_lookup <-
+          selection_frequency %>%
+
+          mutate(
+            term_key = gsub(
+              "`",
+              "",
+              Variable,
+              fixed = TRUE
+            )
+          ) %>%
+
+          group_by(
+            Response,
+            Alpha,
+            nfolds,
+            term_key
+          ) %>%
+
+          summarise(
+            Selection_frequency =
+              max(Selection_frequency),
+
+            .groups = "drop"
+          )
+
+
+        coef_summary_numeric <-
+          coef_summary_raw %>%
+
+          mutate(
+            term_key = gsub(
+              "`",
+              "",
+              term,
+              fixed = TRUE
+            )
+          ) %>%
+
+          left_join(
+            selection_lookup,
+
+            by = c(
+              "Response",
+              "Alpha",
+              "nfolds",
+              "term_key"
+            )
+          ) %>%
+
+          mutate(
+            Selection_frequency = ifelse(
+              term == "(Intercept)",
+              NA_real_,
+              Selection_frequency
+            )
+          ) %>%
+
+          select(-term_key) %>%
+
+          relocate(
+            Selection_frequency,
+            .after = term
+          )
+
+
+        coef_summary <-
+          coef_summary_numeric %>%
+
+          mutate(
+
+            Beta = format_mean_sd(
+              Mean_Beta,
+              SD_Beta
+            ),
+
+            Beta_range = ifelse(
+              is.finite(Lower95_Beta) &
+                is.finite(Upper95_Beta),
+
+              sprintf(
+                "%.3f–%.3f",
+                Lower95_Beta,
+                Upper95_Beta
+              ),
+
+              "—"
+            )
+
+          ) %>%
+
+          rename(
+            Predictor = term,
+
+            `Selection (%)` = Selection_frequency,
+
+            `Estimated splits` = Estimated_splits,
+
+            `β ± SD` = Beta,
+
+            `β empirical range` = Beta_range,
+
+            `Mean SE` = Mean_SE,
+
+            `Mean t` = Mean_t,
+
+            `Median p` = Median_p,
+
+            `Mean FDR` = Mean_FDR,
+
+            `Significant (%)` = Significant_percent,
+
+            `FDR-significant (%)` = FDR_Significant_percent
+          ) %>%
+
+          select(
+            Response,
+            Alpha,
+            nfolds,
+            Predictor,
+
+            `Selection (%)`,
+            `Estimated splits`,
+
+            `β ± SD`,
+            `β empirical range`,
+
+            `Mean SE`,
+            `Mean t`,
+
+            `Median p`,
+            `Mean FDR`,
+
+            `Significant (%)`,
+            `FDR-significant (%)`
+          ) %>%
+
+          arrange(
+            Alpha,
+            desc(`Selection (%)`),
+            Predictor
+          )
+
+
+        ####################################################
+        ######## Save refitted coefficient summary ########
+        ####################################################
+
+        coef_file <- file.path(
+          output_directory,
+
+          paste0(
+            response_file_prefix,
+            "_nfolds_",
+            nfolds_val,
+            "_Refitted_coefficients_summary.xlsx"
+          )
+        )
+
+
+        # Preserve numeric values alongside the display table.
+        write_xlsx(
+          list(
+            Numeric_summary = coef_summary_numeric,
+            Display_summary = coef_summary
+          ),
+
+          path = coef_file
+        )
+
+
+        cat(
+          paste0(
+            '<br><a href="',
+            escape_html(coef_file),
+            '" download>',
+            'Download Refitted Coefficient Summary as Excel',
+            '</a><br><br>'
+          )
+        )
+
+
+        ####################################################
+        ######## Display coefficient summary ###############
+        ####################################################
+
+        # Format p-values only for HTML, preserving numeric
+        # values in Excel and avoiding displays such as 0.000.
+        coef_summary_html <-
+          coef_summary %>%
+
+          mutate(
+
+            `Median p` = ifelse(
+              is.finite(`Median p`),
+
+              format.pval(
+                `Median p`,
+                digits = 3,
+                eps = 0.001
+              ),
+
+              "—"
+            ),
+
+            `Mean FDR` = ifelse(
+              is.finite(`Mean FDR`),
+
+              format.pval(
+                `Mean FDR`,
+                digits = 3,
+                eps = 0.001
+              ),
+
+              "—"
+            )
+          )
+
+
+        print_summary_table(
+          coef_summary_html,
+
+          caption = paste(
+            "Refitted linear model coefficient summary for",
+            response_col,
+            "(nfolds =",
+            nfolds_val,
+            ")"
+          )
+        )
+
+
+        cat(
+          paste0(
+            "<p><small>",
+            "Selection (%) reflects elastic-net inclusion across all ",
+            n_seeds,
+            " requested splits. Mandatory predictors are retained ",
+            "in every successful elastic-net fit. ",
+            "Estimated splits counts successful OLS refits ",
+            "in which the coefficient was estimated. ",
+            "Coefficient means and empirical ranges are conditional ",
+            "on those estimable refits. ",
+            "Mean SE is the average model-based standard error; ",
+            "SD describes coefficient variation across splits. ",
+            "Refitted p-values and FDR are exploratory after selection; ",
+            "averaged FDR values and median p-values are descriptive ",
+            "and are not pooled significance tests.",
+            "</small></p>"
+          )
+        )
+      }
+    }
+
+
+    ########################################################
+    ################ Close nfolds panel ####################
+    ########################################################
+
+    cat("</div></div></div><br>")
+  }
+
+
+  ##########################################################
+  ################ Close response panel ####################
+  ##########################################################
+
+  cat("</div></div></div><br>")
+}
+
+
+
+
+
+
+```
+
+
+
+
+
+
+## Obtaining all the non-zero coefficients of the predictors chosen by elastic net for each alpha value and refitting the regression model de-novo using those predictors. 
+
+A regression model will be generated de-novo with the standard regression, using the predictors with non-zero coefficients, in a process called refitting of the model. That de-novo model or refitted model will be compared by ANOVA with the baseline model generated with the standard regression. These models are different from the previous ones as they are generated with the typical regression instead of with elastic net ML, and now the machine learning algorithm is not used to perform predictions to obtain the performance of the models. If elastic net did not select any candidate biomarkeer, the de-novo (refitted) regression model = baseline model, so ANOVA p-value = NA and performance (R2 for linear regression) of baseline model and de-novo generated (refitted) model will be the same.
+
+The first table will show the coefficients of the candidate biomarkers chosen within our omics data by elastic net as a suitable predictor of the response variables. The coefficients of predictors selected with the penalty.factor will always appear, and correspond to the predictors of the baseline model. Only when elastic net selects candidate biomarkers from our omics data, their coefficients will be also shown. 
+
+The second table will show the estimates of those predictors after being used in a refitted model using the standard regression algorithm, not the machine learning one, and that is why significance of those predictors (p-values) can also be shown.
+
+```{r results='asis'}
+
+
+
+############################################################
+############ Representative Elastic Net models #############
+############################################################
+
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(writexl)
+library(ggplot2)
+
+representative_directory <- "Representative Elastic Net Models"
+
+dir.create(
+  representative_directory,
+  showWarnings = FALSE
+)
+
+
+############################################################
+################ Display helpers ###########################
+############################################################
+
+escape_html <- function(x) {
+  as.character(
+    htmltools::htmlEscape(as.character(x))
+  )
+}
+
+
+print_representative_table <- function(table, caption) {
+
+  kable(
+    table,
+
+    format = "html",
+
+    digits = 3,
+
+    caption = caption,
+
+    align = "c",
+
+    escape = TRUE
+  ) %>%
+
+    kable_styling(
+      bootstrap_options = c(
+        "striped",
+        "hover",
+        "condensed",
+        "responsive"
+      ),
+
+      full_width = FALSE,
+
+      position = "center"
+    ) %>%
+
+    row_spec(
+      0,
+      bold = TRUE,
+      color = "white",
+      background = "black"
+    ) %>%
+
+    print()
+}
+
+
+# Restore graphics settings after drawing each CV plot.
+plot_representative_cv <- function(cvfit) {
+
+  old_par <- par(no.readonly = TRUE)
+
+  on.exit(
+    par(old_par),
+    add = TRUE
+  )
+
+  par(
+    mar = c(5, 5, 5.5, 2),
+    oma = c(0, 0, 0, 0)
+  )
+
+  plot(cvfit)
+
+  title(
+    main = "Gaussian Elastic Net Cross-validation",
+    cex.main = 1.0
+  )
+}
+
+
+############################################################
+############ Identify representative models ################
+############################################################
+
+representative_models <-
+
+  refit_results %>%
+
+  # Exclude failed refits and undefined test R².
+  filter(
+    Status == "ok",
+    is.finite(Refit_R2)
+  ) %>%
+
+  group_by(
+    Response,
+    Alpha,
+    nfolds
+  ) %>%
+
+  mutate(
+
+    Mean_Refit_R2 = mean(
+      Refit_R2
+    ),
+
+    Distance = abs(
+      Refit_R2 - Mean_Refit_R2
+    )
+
+  ) %>%
+
+  arrange(
+    Distance,
+    Seed,
+    .by_group = TRUE
+  ) %>%
+
+  # Preserve your original choice of two representatives.
+  slice_head(n = 2) %>%
+
+  ungroup()
+
+
+if (nrow(representative_models) == 0) {
+
+  cat(
+    paste0(
+      "<p>No successful de-novo models with finite test R² ",
+      "are available for representative plots.</p>"
+    )
+  )
+}
+
+
+############################################################
+################ Loop over responses #######################
+############################################################
+
+representative_responses <- unique(
+  representative_models$Response
+)
+
+
+for (response_index in seq_along(representative_responses)) {
+
+  response_col <- representative_responses[response_index]
+
+  response_id <- paste0(
+    "representative_linear_response_",
+    response_index
+  )
+
+  response_file_prefix <- paste0(
+    "Response_",
+    response_index,
+    "_",
+    gsub(
+      "[^[:alnum:]_-]",
+      "_",
+      response_col
+    )
+  )
+
+
+  cat(
+    paste0(
+      '<div class="panel panel-default">',
+      '<div class="panel-heading">',
+      '<h4 class="panel-title">',
+      '<a data-toggle="collapse" href="#',
+      response_id,
+      '">',
+      'Representative models for Response: ',
+      escape_html(response_col),
+      '</a>',
+      '</h4>',
+      '</div>',
+      '<div id="',
+      response_id,
+      '" class="panel-collapse collapse">',
+      '<div class="panel-body">'
+    )
+  )
+
+
+  cat(
+    paste0(
+      "<p><small>",
+      "These splits were selected for descriptive illustration ",
+      "because their refit test R² is closest to the mean ",
+      "within each alpha/fold configuration. ",
+      "This is not independent selection or validation of ",
+      "a final deployment model.",
+      "</small></p>"
+    )
+  )
+
+
+  ##########################################################
+  ################ Loop over nfolds ########################
+  ##########################################################
+
+  response_folds <-
+    representative_models %>%
+
+    filter(
+      Response == response_col
+    ) %>%
+
+    pull(nfolds) %>%
+
+    unique() %>%
+
+    sort()
+
+
+  for (nfolds_val in response_folds) {
+
+    fold_id <- paste0(
+      response_id,
+      "_folds_",
+      nfolds_val
+    )
+
+
+    cat(
+      paste0(
+        '<div class="panel panel-default">',
+        '<div class="panel-heading">',
+        '<h5 class="panel-title">',
+        '<a data-toggle="collapse" href="#',
+        fold_id,
+        '">',
+        'nfolds = ',
+        nfolds_val,
+        '</a>',
+        '</h5>',
+        '</div>',
+        '<div id="',
+        fold_id,
+        '" class="panel-collapse collapse">',
+        '<div class="panel-body">'
+      )
+    )
+
+
+    ########################################################
+    ################ Loop over alpha #######################
+    ########################################################
+
+    response_alphas <-
+      representative_models %>%
+
+      filter(
+        Response == response_col,
+        nfolds == nfolds_val
+      ) %>%
+
+      pull(Alpha) %>%
+
+      unique() %>%
+
+      sort()
+
+
+    for (alpha_val in response_alphas) {
+
+      cat(
+        paste0(
+          '<details><summary><strong>Alpha = ',
+          alpha_val,
+          '</strong></summary><br>'
+        )
+      )
+
+
+      rep_models <-
+        representative_models %>%
+
+        filter(
+          Response == response_col,
+          nfolds == nfolds_val,
+          Alpha == alpha_val
+        )
+
+
+      if (nrow(rep_models) == 0) {
+
+        cat(
+          "No representative models found.<br><br>"
+        )
+
+      } else {
+
+
+        ####################################################
+        ######## Loop over representative seeds ############
+        ####################################################
+
+        for (i in seq_len(nrow(rep_models))) {
+
+          this_seed <- rep_models$Seed[i]
+
+
+          cat(
+            paste0(
+              "<h4>Representative model ",
+              i,
+              " (Seed ",
+              this_seed,
+              ")</h4>"
+            )
+          )
+
+
+          cat(
+            paste0(
+
+              "<b>Baseline OLS test R²:</b> ",
+              round(
+                rep_models$Baseline_R2[i],
+                3
+              ),
+              "<br>",
+
+
+              "<b>Refitted test R²:</b> ",
+              round(
+                rep_models$Refit_R2[i],
+                3
+              ),
+              "<br>",
+
+
+              "<b>Mean refitted test R²:</b> ",
+              round(
+                rep_models$Mean_Refit_R2[i],
+                3
+              ),
+              "<br>",
+
+
+              "<b>Distance from mean R²:</b> ",
+              round(
+                rep_models$Distance[i],
+                5
+              ),
+              "<br>",
+
+
+              "<b>ΔR²:</b> ",
+              round(
+                rep_models$Delta_R2[i],
+                3
+              ),
+              "<br><br>",
+
+
+              "<b>Baseline OLS test RMSE:</b> ",
+              round(
+                rep_models$Baseline_RMSE[i],
+                3
+              ),
+              "<br>",
+
+
+              "<b>Refitted test RMSE:</b> ",
+              round(
+                rep_models$Refit_RMSE[i],
+                3
+              ),
+              "<br>",
+
+
+              "<b>RMSE improvement:</b> ",
+              round(
+                rep_models$Delta_RMSE[i],
+                3
+              ),
+              "<br>",
+
+
+              "<b>Refitted test MAE:</b> ",
+              round(
+                rep_models$Refit_MAE[i],
+                3
+              ),
+              "<br><br>",
+
+
+              "<b>Number of selected biomarkers:</b> ",
+              rep_models$Number_predictors[i],
+              "<br>",
+
+
+              "<b>Selected biomarkers:</b> ",
+              if (
+                is.na(rep_models$Selected_biomarkers[i]) ||
+                !nzchar(rep_models$Selected_biomarkers[i])
+              ) {
+                "None; the refit equals the baseline model"
+              } else {
+                escape_html(
+                  rep_models$Selected_biomarkers[i]
+                )
+              },
+              "<br><br>"
+
+            )
+          )
+
+
+          ##################################################
+          ############ Cross-validation plot ###############
+          ##################################################
+
+          cv_key <- paste(
+            response_col,
+            alpha_val,
+            nfolds_val,
+            this_seed,
+            sep = "_"
+          )
+
+
+          cvfit <- cv_models[[cv_key]]
+
+
+          if (!is.null(cvfit)) {
+
+            cat(
+              paste0(
+                "<b>λmin:</b> ",
+                signif(cvfit$lambda.min, 5),
+                "<br>",
+
+                "<b>λ1se:</b> ",
+                signif(cvfit$lambda.1se, 5),
+                "<br><br>\n\n"
+              )
+            )
+
+            plot_representative_cv(cvfit)
+
+            cat(
+              paste0(
+                "\n\n<p><small>",
+                "The CV plot shows training cross-validation MSE. ",
+                "The reported model uses λmin.",
+                "</small></p>\n\n"
+              )
+            )
+
+          } else {
+
+            cat(
+              "<b>Cross-validation plot not available.</b><br><br>"
+            )
+          }
+
+
+          ##################################################
+          ######## Refitted observed-versus-predicted #######
+          ##################################################
+
+          prediction_key <- paste(
+            this_seed,
+            response_col,
+            alpha_val,
+            nfolds_val,
+            sep = "_"
+          )
+
+
+          prediction_info <-
+            refit_prediction_storage[[prediction_key]]
+
+
+          if (!is.null(prediction_info)) {
+
+            valid_predictions <-
+              is.finite(prediction_info$observed) &
+              is.finite(prediction_info$predicted)
+
+
+            if (any(valid_predictions)) {
+
+              plot_data <- data.frame(
+                Observed =
+                  prediction_info$observed[valid_predictions],
+
+                Predicted =
+                  prediction_info$predicted[valid_predictions]
+              )
+
+
+              prediction_plot <-
+                ggplot(
+                  plot_data,
+
+                  aes(
+                    x = Observed,
+                    y = Predicted
+                  )
+                ) +
+
+                geom_point(
+                  color = "#2166AC",
+                  alpha = 0.75,
+                  size = 2
+                ) +
+
+                geom_abline(
+                  intercept = 0,
+                  slope = 1,
+                  linetype = "dashed",
+                  color = "#B2182B",
+                  linewidth = 0.8
+                ) +
+
+                coord_equal() +
+
+                theme_minimal(
+                  base_size = 12
+                ) +
+
+                labs(
+                  title =
+                    "Refitted linear regression: test predictions",
+
+                  subtitle = paste0(
+                    "Seed = ",
+                    this_seed,
+                    " | R² = ",
+                    sprintf(
+                      "%.3f",
+                      prediction_info$r2
+                    ),
+                    " | RMSE = ",
+                    sprintf(
+                      "%.3f",
+                      prediction_info$rmse
+                    )
+                  ),
+
+                  x = "Observed outcome",
+
+                  y = "Predicted outcome",
+
+                  caption =
+                    "Dashed line: perfect prediction."
+                )
+
+
+              print(prediction_plot)
+
+              cat("\n\n")
+
+            } else {
+
+              cat(
+                "<p>No finite test predictions are available.</p>"
+              )
+            }
+
+          } else {
+
+            cat(
+              "<p>Refitted prediction plot not available.</p>"
+            )
+          }
+
+
+          ##################################################
+          ######## Elastic Net coefficient table ###########
+          ##################################################
+
+          elastic_table <-
+            coefficients_df %>%
+
+            filter(
+              Seed == this_seed,
+              Response == response_col,
+              Alpha == alpha_val,
+              nfolds == nfolds_val,
+
+              # Include the intercept and all mandatory terms,
+              # even when their estimated coefficients are zero.
+              Variable == "(Intercept)" |
+                Mandatory |
+                Nonzero
+            )
+
+
+          elastic_file <- file.path(
+            representative_directory,
+
+            paste0(
+              response_file_prefix,
+              "_nfolds_",
+              nfolds_val,
+              "_alpha_",
+              alpha_val,
+              "_seed_",
+              this_seed,
+              "_ElasticNet.xlsx"
+            )
+          )
+
+
+          write_xlsx(
+            elastic_table,
+            elastic_file
+          )
+
+
+          cat(
+            paste0(
+              '<a href="',
+              escape_html(elastic_file),
+              '" download>',
+              'Download Elastic Net coefficients (Seed ',
+              this_seed,
+              ')</a><br><br>'
+            )
+          )
+
+
+          print_representative_table(
+            elastic_table,
+
+            caption = paste(
+              "Elastic Net coefficients",
+              "(Seed",
+              this_seed,
+              ")"
+            )
+          )
+
+
+          ##################################################
+          ######## Refitted linear coefficient table #######
+          ##################################################
+
+          refit_table <-
+            refit_coefficients %>%
+
+            filter(
+              Seed == this_seed,
+              Response == response_col,
+              Alpha == alpha_val,
+              nfolds == nfolds_val
+            )
+
+
+          refit_file <- file.path(
+            representative_directory,
+
+            paste0(
+              response_file_prefix,
+              "_nfolds_",
+              nfolds_val,
+              "_alpha_",
+              alpha_val,
+              "_seed_",
+              this_seed,
+              "_Refitted.xlsx"
+            )
+          )
+
+
+          if (nrow(refit_table) > 0) {
+
+            # Export numeric coefficients and model performance.
+            write_xlsx(
+              list(
+                Coefficients = refit_table,
+
+                Performance =
+                  as.data.frame(
+                    rep_models[i, , drop = FALSE]
+                  )
+              ),
+
+              path = refit_file
+            )
+
+
+            cat(
+              paste0(
+                '<a href="',
+                escape_html(refit_file),
+                '" download>',
+                'Download Refitted Linear Model Results (Seed ',
+                this_seed,
+                ')</a><br><br>'
+              )
+            )
+
+
+            refit_table_html <-
+              refit_table %>%
+
+              transmute(
+                Predictor = term,
+
+                Beta = estimate,
+
+                SE = std.error,
+
+                `t statistic` = statistic,
+
+                `p-value` = ifelse(
+                  is.finite(p.value),
+
+                  format.pval(
+                    p.value,
+                    digits = 3,
+                    eps = 0.001
+                  ),
+
+                  "—"
+                ),
+
+                FDR = ifelse(
+                  is.finite(FDR),
+
+                  format.pval(
+                    FDR,
+                    digits = 3,
+                    eps = 0.001
+                  ),
+
+                  "—"
+                )
+              )
+
+
+            print_representative_table(
+              refit_table_html,
+
+              caption = paste(
+                "Refitted linear regression coefficients",
+                "(Seed",
+                this_seed,
+                ")"
+              )
+            )
+
+
+            cat(
+              paste0(
+                "<p><small>",
+                "β is the adjusted association with the continuous ",
+                "outcome; no odds ratios apply. ",
+                "P-values and within-model FDR are exploratory ",
+                "because the same training observations were used ",
+                "for biomarker selection and OLS refitting.",
+                "</small></p>"
+              )
+            )
+
+          } else {
+
+            cat(
+              "<p>Refitted coefficient table not available.</p>"
+            )
+          }
+
+
+          cat("<hr>")
+        }
+      }
+
+
+      cat("</details><br>")
+    }
+
+
+    cat("</div></div></div><br>")
+  }
+
+
+  cat("</div></div></div><br>")
+}
+
+
+
+
+```
+
+
+
+
+## Session information
+
+```{r session-info, echo=FALSE}
+sessionInfo()
+```
+
+
