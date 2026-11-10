@@ -1,0 +1,5691 @@
+---
+title: "OPUS Cox Regression — Incident Non-Vertebral Fracture"
+author: "David Carro Vazquez"
+date: "2026-11-10"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+options(
+  repos = c(CRAN = "https://cloud.r-project.org")
+)
+```
+
+Values to control:
+
+```{r analysis-settings}
+
+n_seeds <- 50
+
+alpha_values <- seq(0.05, 1, by = 0.05)
+
+nfolds_values <- c(5, 10, 20)
+
+# Preserve the original individual-biomarker screening threshold.
+individual_p_threshold <- 0.10
+
+# Predictor-level significance threshold.
+predictor_p_threshold <- 0.05
+
+min_frequency <- ceiling(0.80 * n_seeds)
+
+# The workbook contains two complete-case events at zero months.
+# "exclude": explicitly exclude and log nonpositive follow-up times.
+# "stop": stop the analysis until these records are resolved.
+zero_time_action <- "exclude"
+
+# Elastic-net lambda selection will be applied in its later section:
+# baseline_lambda <- baseline_cvfit$lambda.min
+# lambda_min <- cvfit$lambda.min
+```
+
+## Data Loading
+
+```{r data-loading}
+# Load all required libraries in one chunk for global availability
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(survival)
+library(readxl)
+library(writexl)
+library(lmtest)
+library(ggplot2)
+
+
+# Load data and process
+data1 <- read_excel(
+  "C:/Users/75118/Desktop/OPUS data for machine learning/cox regression incident non-vertebral fracture/final datafile for machine learning_phenotype-miRs_cox_miR_ratio_norm.xlsx"
+)
+
+
+# Preserve identifiers separately so they cannot become predictors.
+sample_ids <- data1[[1]]
+
+excel_rows <- seq_len(nrow(data1)) + 1L
+
+
+# Remove the first column, containing SampleID.
+data <- data1[, -1, drop = FALSE]
+
+
+# Preserve the original complete-case approach.
+complete_rows <- complete.cases(data)
+
+data <- data[complete_rows, , drop = FALSE]
+
+sample_ids <- sample_ids[complete_rows]
+
+excel_rows <- excel_rows[complete_rows]
+
+
+# Define column indices AFTER removing SampleID.
+columns_omics <- 9
+
+columns_nonomics <- 8
+
+columns_categoric <- 2
+
+columns_response <- 7  # Event: IncidentNonVertFX
+
+columns_time <- 8      # Months to event or censoring
+
+columns_predictors <- 1:6
+
+columns_adjustment <- 1 # UniSp4
+
+
+# Determine expanded design-matrix indices in the elastic-net section.
+columns_predictors_x <- NULL
+
+
+# Define response, time and mandatory predictor names.
+response_cols <- colnames(data)[columns_response]
+
+response_col <- response_cols[[1]]
+
+time_col <- colnames(data)[columns_time]
+
+predictor_cols_base <- colnames(data)[columns_predictors]
+
+
+# BOTH outcome components must be excluded from predictor matrices.
+exclude_columns <- c(
+  response_cols,
+  time_col,
+  "row_id"
+)
+
+
+# Validate event coding.
+if (
+  !is.numeric(data[[response_col]]) ||
+  !all(data[[response_col]] %in% c(0, 1))
+) {
+  stop("Event status must be numeric: 0 = censored, 1 = event.")
+}
+
+
+# Validate follow-up time.
+if (
+  !is.numeric(data[[time_col]]) ||
+  any(!is.finite(data[[time_col]]))
+) {
+  stop("Follow-up time must contain finite numeric values.")
+}
+
+
+# Check one record per participant.
+if (anyNA(sample_ids) || anyDuplicated(sample_ids)) {
+  stop("SampleID must be nonmissing and unique.")
+}
+
+
+# Explicitly handle nonpositive follow-up times.
+nonpositive_time <- data[[time_col]] <= 0
+
+excluded_time_records <- data.frame(
+  Excel_row = excel_rows[nonpositive_time],
+  SampleID = sample_ids[nonpositive_time],
+  Event = data[[response_col]][nonpositive_time],
+  Time_months = data[[time_col]][nonpositive_time]
+)
+
+if (any(nonpositive_time)) {
+
+  write_xlsx(
+    excluded_time_records,
+    "Cox_Nonpositive_Followup_Records.xlsx"
+  )
+
+  if (zero_time_action == "stop") {
+
+    stop(
+      "Nonpositive follow-up times found. ",
+      "See Cox_Nonpositive_Followup_Records.xlsx."
+    )
+
+  } else if (zero_time_action == "exclude") {
+
+    message(
+      "Excluding ",
+      sum(nonpositive_time),
+      " complete-case observations with follow-up <= 0 months. ",
+      "Their original values are preserved in the exclusion file."
+    )
+
+    data <- data[!nonpositive_time, , drop = FALSE]
+
+    sample_ids <- sample_ids[!nonpositive_time]
+
+    excel_rows <- excel_rows[!nonpositive_time]
+
+  } else {
+
+    stop("zero_time_action must be 'stop' or 'exclude'.")
+  }
+}
+
+
+cat("Participants retained:", nrow(data), "\n")
+
+cat(
+  "Events:",
+  sum(data[[response_col]] == 1),
+  "\n"
+)
+
+cat(
+  "Censored observations:",
+  sum(data[[response_col]] == 0),
+  "\n"
+)
+
+
+# Preserve these function names for compatibility with later chunks.
+# No class balancing is performed for standard Cox regression.
+
+balance_data <- function(df, response_col) {
+  return(df)
+}
+
+
+compute_case_weights <- function(df, response_col) {
+  return(rep(1, nrow(df)))
+}
+
+
+use_weights <- FALSE
+```
+
+## Adjusting Data
+
+```{r adjusting-data}
+# ==================> IDENTIFY ALL-ZERO BIOMARKERS <==================
+
+if (columns_omics > ncol(data)) {
+  stop("No candidate biomarker columns are present.")
+}
+
+biomarker_indices <- columns_omics:ncol(data)
+
+
+# Verify that biomarkers are numeric.
+numeric_biomarkers <- vapply(
+  data[, biomarker_indices, drop = FALSE],
+  is.numeric,
+  logical(1)
+)
+
+if (any(!numeric_biomarkers)) {
+  stop(
+    "Nonnumeric biomarker columns: ",
+    paste(
+      names(data)[biomarker_indices[!numeric_biomarkers]],
+      collapse = ", "
+    )
+  )
+}
+
+
+# Preserve the original all-zero filtering procedure.
+cols_to_remove <- vapply(
+  data[, biomarker_indices, drop = FALSE],
+
+  function(col) {
+    all(col == 0)
+  },
+
+  logical(1)
+)
+
+
+# ==================> REMOVE ALL-ZERO BIOMARKERS <==================
+
+data <- data[
+  ,
+  c(
+    seq_len(columns_nonomics),
+    biomarker_indices[!cols_to_remove]
+  ),
+  drop = FALSE
+]
+
+
+# ==================> VERIFY REMOVAL <==================
+
+if (ncol(data) < columns_omics) {
+  stop("No biomarkers remain after all-zero filtering.")
+}
+
+biomarker_data <- data[
+  ,
+  columns_omics:ncol(data),
+  drop = FALSE
+]
+
+cols_with_all_zeros <- vapply(
+  biomarker_data,
+  function(col) all(col == 0),
+  logical(1)
+)
+
+zero_columns <- colnames(biomarker_data)[cols_with_all_zeros]
+
+if (length(zero_columns) == 0) {
+  cat("All zero-only columns have been removed successfully.\n")
+} else {
+  cat("Columns with all zero values still present:\n")
+  print(zero_columns)
+}
+
+cat("Final dimensions of data:", dim(data), "\n")
+```
+
+## Using a categorical variable as a factor
+
+```{r categorical-variables}
+# Convert the specified categorical columns to factors.
+data[, columns_categoric] <- lapply(
+  data[, columns_categoric, drop = FALSE],
+  as.factor
+)
+
+
+# Define factorized columns for later design matrices.
+factor_columns <- colnames(data)[columns_categoric]
+
+
+for (col in factor_columns) {
+
+  if (nlevels(data[[col]]) < 2) {
+    stop("Categorical variable has fewer than two levels: ", col)
+  }
+}
+
+
+# Treatment contrasts: K levels produce K - 1 contrast columns.
+contrasts_list <- lapply(
+  setNames(factor_columns, factor_columns),
+
+  function(col) {
+    contrasts(
+      data[[col]],
+      contrasts = TRUE
+    )
+  }
+)
+```
+
+## Data Scaling
+
+This preserves the global scaling used in the supplied logistic workflow. Training-only scaling would be a separate methodological change applicable to both workflows.
+
+```{r biomarker-scaling}
+# Check for columns that scale() cannot standardize.
+biomarker_sd <- vapply(
+  data[, columns_omics:ncol(data), drop = FALSE],
+  sd,
+  numeric(1)
+)
+
+invalid_biomarkers <- names(biomarker_sd)[
+  !is.finite(biomarker_sd) |
+    biomarker_sd <= 0
+]
+
+if (length(invalid_biomarkers) > 0) {
+
+  stop(
+    "These biomarker columns cannot be standardized: ",
+    paste(invalid_biomarkers, collapse = ", "),
+    ". Check constant nonzero columns or non-finite values."
+  )
+}
+
+
+# Scale the omics data.
+scaled_biomarker_data <- scale(
+  data[, columns_omics:ncol(data), drop = FALSE]
+)
+
+
+# Update the dataset with the scaled biomarker data.
+data[, columns_omics:ncol(data)] <-
+  as.data.frame(scaled_biomarker_data)
+```
+
+## Scaling of adjustment-normalization biomarker
+
+```{r adjustment-scaling}
+# Scale the adjustment biomarker, UniSp4.
+adjustment_values <- data[[columns_adjustment]]
+
+if (
+  !is.numeric(adjustment_values) ||
+  any(!is.finite(adjustment_values)) ||
+  sd(adjustment_values) == 0
+) {
+  stop("The adjustment biomarker must be numeric, finite and nonconstant.")
+}
+
+scaled_adjmolecule_data <- scale(adjustment_values)
+
+data[[columns_adjustment]] <-
+  as.numeric(scaled_adjmolecule_data)
+```
+
+## Data Preparation
+
+```{r preparation-libraries}
+options(
+  repos = c(CRAN = "https://cloud.r-project.org/")
+)
+
+library(tidymodels)
+library(rsample)
+library(kableExtra)
+library(DT)
+```
+
+```{r prepare-datasets}
+# Preparing the non-omics dataset.
+# This includes BOTH event status and follow-up time.
+data_noBiomarker <- data %>%
+  select(1:columns_nonomics)
+
+
+# Preparing the candidate biomarker dataset.
+data_Biomarker <- data %>%
+  select(columns_omics:ncol(data))
+```
+
+## Individual biomarker Cox regression across 50 shared splits
+
+**C-index baseline:** discrimination of the mandatory-predictor Cox model on the independent test set.
+
+**C-index biomarker:** discrimination of the Cox model containing mandatory predictors plus one biomarker.
+
+**ΔC-index:** biomarker-model C-index minus baseline C-index.
+
+**ANOVA:** nested-model partial-likelihood ratio comparison using identical training observations and the same tie-handling method.
+
+No class balancing is applied. The same 50 splits will be reused for elastic net and de-novo Cox refits.
+
+```{r individual-cox, results='asis', warning=TRUE}
+# Load necessary libraries.
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(survival)
+library(writexl)
+library(rsample)
+library(DT)
+
+
+# Initialize lists to store the results.
+results_list <- list()
+
+prediction_storage <- list()
+
+predictor_results <- list()
+
+ph_results <- list()
+
+failed_models <- list()
+
+
+# Stable row IDs must remain available for subsequent sections.
+data$row_id <- seq_len(nrow(data))
+
+
+dir.create(
+  "Individually Selected Predictors",
+  showWarnings = FALSE
+)
+
+
+##########################################################
+################ Helper functions ########################
+##########################################################
+
+make_cox_formula <- function(time_col, response_col, predictors) {
+
+  variable_names <- c(
+    time_col,
+    response_col,
+    predictors
+  )
+
+  if (any(grepl("`", variable_names, fixed = TRUE))) {
+    stop("Remove backtick characters from column names.")
+  }
+
+  quote_name <- function(x) {
+    paste0("`", x, "`")
+  }
+
+  as.formula(
+    paste0(
+      "Surv(",
+      quote_name(time_col),
+      ", ",
+      quote_name(response_col),
+      ") ~ ",
+      paste(
+        quote_name(predictors),
+        collapse = " + "
+      )
+    )
+  )
+}
+
+
+calculate_cindex <- function(times, events, risk_scores) {
+
+  risk_scores <- as.numeric(risk_scores)
+
+  if (
+    length(times) != length(risk_scores) ||
+    length(events) != length(risk_scores) ||
+    any(!is.finite(times)) ||
+    any(!is.finite(risk_scores))
+  ) {
+    stop("Invalid survival outcomes or risk scores.")
+  }
+
+  evaluation_data <- data.frame(
+    time = times,
+    event = events,
+    risk = risk_scores
+  )
+
+  concordance_result <- survival::concordance(
+    Surv(time, event) ~ risk,
+    data = evaluation_data,
+
+    # Higher Cox risk scores indicate SHORTER survival.
+    reverse = TRUE,
+
+    # Harrell's C-index.
+    timewt = "n"
+  )
+
+  comparable_pairs <- sum(
+    concordance_result$count[
+      c(
+        "concordant",
+        "discordant",
+        "tied.x"
+      )
+    ]
+  )
+
+  list(
+    Cindex = if (comparable_pairs > 0) {
+      unname(concordance_result$concordance)
+    } else {
+      NA_real_
+    },
+
+    SE = if (comparable_pairs > 0) {
+      sqrt(unname(concordance_result$var))
+    } else {
+      NA_real_
+    },
+
+    Comparable_pairs = comparable_pairs
+  )
+}
+
+
+fit_cox_checked <- function(formula, model_data) {
+
+  fit <- withCallingHandlers(
+
+    survival::coxph(
+      formula,
+      data = model_data,
+      ties = "breslow",
+      x = TRUE,
+      y = TRUE,
+      model = TRUE,
+      singular.ok = FALSE,
+      na.action = na.fail,
+      control = coxph.control(iter.max = 50)
+    ),
+
+    warning = function(w) {
+
+      # Do not treat nonconverged/infinite estimates as valid inference.
+      if (
+        grepl(
+          "infinite|converg|singular|overflow",
+          conditionMessage(w),
+          ignore.case = TRUE
+        )
+      ) {
+        stop(conditionMessage(w), call. = FALSE)
+      }
+    }
+  )
+
+  if (
+    any(!is.finite(coef(fit))) ||
+    any(!is.finite(vcov(fit)))
+  ) {
+    stop("Non-finite Cox coefficients or covariance matrix.")
+  }
+
+  fit
+}
+
+
+calculate_ph_test <- function(fit) {
+
+  tryCatch(
+    survival::cox.zph(fit),
+
+    error = function(e) {
+      warning(
+        "Proportional-hazards test unavailable: ",
+        conditionMessage(e),
+        call. = FALSE
+      )
+      NULL
+    }
+  )
+}
+
+
+safe_mean <- function(x) {
+  x <- x[is.finite(x)]
+  if (!length(x)) return(NA_real_)
+  mean(x)
+}
+
+
+safe_median <- function(x) {
+  x <- x[is.finite(x)]
+  if (!length(x)) return(NA_real_)
+  median(x)
+}
+
+
+safe_sd <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) < 2) return(NA_real_)
+  sd(x)
+}
+
+
+safe_quantile <- function(x, probability) {
+  x <- x[is.finite(x)]
+  if (!length(x)) return(NA_real_)
+  unname(quantile(x, probability))
+}
+
+
+escape_html <- function(x) {
+  as.character(
+    htmltools::htmlEscape(as.character(x))
+  )
+}
+
+
+##########################################################
+############ Generate fixed train/test splits ############
+##########################################################
+
+splits <- vector("list", n_seeds)
+
+
+for (seed in seq_len(n_seeds)) {
+
+  set.seed(seed)
+
+  # Stratify by event status, not follow-up time.
+  # Treat the 0/1 indicator explicitly as a factor for splitting.
+  split_data <- data
+
+  split_data$.split_event <- factor(
+    split_data[[response_col]],
+    levels = c(0, 1)
+  )
+
+  splits[[seed]] <- rsample::initial_split(
+    split_data,
+    prop = 0.70,
+    strata = .split_event
+  )
+}
+
+
+# The .split_event helper MUST NOT be used as a predictor.
+exclude_columns <- unique(
+  c(
+    response_cols,
+    time_col,
+    "row_id",
+    ".split_event"
+  )
+)
+
+
+saveRDS(
+  splits,
+  "Individually Selected Predictors/Shared_Cox_Train_Test_Splits.rds"
+)
+
+
+##########################################################
+################ Begin 50-seed loop #######################
+##########################################################
+
+for (seed in seq_len(n_seeds)) {
+
+  cat("\n=========================\n")
+  cat("Seed:", seed, "\n")
+  cat("=========================\n")
+
+  split <- splits[[seed]]
+
+  train_raw <- rsample::training(split)
+
+  test_data <- rsample::testing(split)
+
+
+  # Remove the stratification helper from modeling datasets.
+  train_raw$.split_event <- NULL
+
+  test_data$.split_event <- NULL
+
+
+  if (
+    sum(train_raw[[response_col]]) == 0 ||
+    sum(test_data[[response_col]]) == 0
+  ) {
+    stop("A training or test split has no events.")
+  }
+
+
+  predictors <- setdiff(
+    predictor_cols_base,
+    c(response_col, time_col)
+  )
+
+
+  baseline_formula <- make_cox_formula(
+    time_col,
+    response_col,
+    predictors
+  )
+
+
+  # Preserve existing names, but do not balance the Cox training data.
+  balanced_train_data <- train_raw
+
+  balanced_weights <- rep(
+    1,
+    nrow(balanced_train_data)
+  )
+
+
+  baseline_model_balanced <- fit_cox_checked(
+    baseline_formula,
+    balanced_train_data
+  )
+
+
+  baseline_risk <- as.numeric(
+    predict(
+      baseline_model_balanced,
+      newdata = test_data,
+      type = "lp"
+    )
+  )
+
+
+  baseline_concordance <- calculate_cindex(
+    times = test_data[[time_col]],
+    events = test_data[[response_col]],
+    risk_scores = baseline_risk
+  )
+
+  baseline_cindex <- baseline_concordance$Cindex
+
+
+  baseline_ph <- calculate_ph_test(
+    baseline_model_balanced
+  )
+
+  baseline_ph_p <- if (!is.null(baseline_ph)) {
+    unname(baseline_ph$table["GLOBAL", "p"])
+  } else {
+    NA_real_
+  }
+
+
+  ########################################################
+  ################ Loop over biomarkers ##################
+  ########################################################
+
+  # Include the FIRST biomarker too.
+  for (i in seq_len(ncol(data_Biomarker))) {
+
+    colName <- names(data_Biomarker)[i]
+
+
+    tryCatch({
+
+      myBiomarker <- data_Biomarker[[i]]
+
+      predictor_cols <- c(
+        predictors,
+        "Biomarker"
+      )
+
+      formula <- make_cox_formula(
+        time_col,
+        response_col,
+        predictor_cols
+      )
+
+
+      temp_train <- train_raw
+
+      temp_test <- test_data
+
+      biomarker_values <- myBiomarker
+
+
+      temp_train$Biomarker <- biomarker_values[
+        match(
+          temp_train$row_id,
+          data$row_id
+        )
+      ]
+
+      temp_test$Biomarker <- biomarker_values[
+        match(
+          temp_test$row_id,
+          data$row_id
+        )
+      ]
+
+
+      model_data <- balanced_train_data
+
+      case_weights <- balanced_weights
+
+      model_data$Biomarker <- biomarker_values[
+        match(
+          model_data$row_id,
+          data$row_id
+        )
+      ]
+
+
+      if (
+        !is.finite(sd(model_data$Biomarker)) ||
+        sd(model_data$Biomarker) == 0
+      ) {
+        stop("Biomarker is constant in this training split.")
+      }
+
+
+      cox_biomarker <- fit_cox_checked(
+        formula,
+        model_data
+      )
+
+
+      biomarker_risk <- as.numeric(
+        predict(
+          cox_biomarker,
+          newdata = temp_test,
+          type = "lp"
+        )
+      )
+
+
+      biomarker_concordance <- calculate_cindex(
+        times = temp_test[[time_col]],
+        events = temp_test[[response_col]],
+        risk_scores = biomarker_risk
+      )
+
+      cindex_biomarker <- biomarker_concordance$Cindex
+
+
+      ####################################################
+      ################ Likelihood-ratio test #############
+      ####################################################
+
+      # Same training rows and Breslow ties in both models.
+      # This is the nested partial-likelihood ANOVA comparison.
+      anova_chisq <- 2 * as.numeric(
+        logLik(cox_biomarker) -
+          logLik(baseline_model_balanced)
+      )
+
+      anova_df <- length(coef(cox_biomarker)) -
+        length(coef(baseline_model_balanced))
+
+      if (anova_chisq < -1e-6 || anova_df <= 0) {
+        stop("Invalid nested-model likelihood-ratio comparison.")
+      }
+
+      anova_chisq <- max(0, anova_chisq)
+
+      anova_cox <- pchisq(
+        anova_chisq,
+        df = anova_df,
+        lower.tail = FALSE
+      )
+
+
+      ####################################################
+      ################ Coefficient inference #############
+      ####################################################
+
+      summary_model <- summary(cox_biomarker)
+
+      coef_matrix <- summary_model$coefficients
+
+      ci_matrix <- summary_model$conf.int
+
+
+      # Preserve familiar coefficient-column names for later tables.
+      coef_df <- data.frame(
+        Estimate = coef_matrix[, "coef"],
+
+        SE = coef_matrix[, "se(coef)"],
+
+        Wald_z = coef_matrix[, "z"],
+
+        Pr = coef_matrix[, "Pr(>|z|)"],
+
+        HR = ci_matrix[, "exp(coef)"],
+
+        HR_lower95 = ci_matrix[, "lower .95"],
+
+        HR_upper95 = ci_matrix[, "upper .95"],
+
+        Predictor = rownames(coef_matrix),
+
+        Seed = seed,
+
+        Biomarker = colName,
+
+        Response = response_col,
+
+        row.names = NULL
+      )
+
+
+      # Preserve the original within-model FDR calculation.
+      coef_df$FDR <- p.adjust(
+        coef_df$Pr,
+        method = "fdr"
+      )
+
+
+      marker_row <- coef_df[
+        coef_df$Predictor == "Biomarker",
+        ,
+        drop = FALSE
+      ]
+
+
+      if (nrow(marker_row) != 1) {
+        stop("Biomarker coefficient could not be identified.")
+      }
+
+
+      ####################################################
+      ################ Proportional-hazards test #########
+      ####################################################
+
+      ph_test <- calculate_ph_test(
+        cox_biomarker
+      )
+
+      global_ph_p <- NA_real_
+
+      biomarker_ph_p <- NA_real_
+
+
+      if (!is.null(ph_test)) {
+
+        global_ph_p <-
+          unname(ph_test$table["GLOBAL", "p"])
+
+        if ("Biomarker" %in% rownames(ph_test$table)) {
+
+          biomarker_ph_p <-
+            unname(ph_test$table["Biomarker", "p"])
+        }
+
+        ph_results[[length(ph_results) + 1L]] <-
+          data.frame(
+            Seed = seed,
+            Response = response_col,
+            Biomarker = colName,
+
+            Term = rownames(ph_test$table),
+
+            Chisq = ph_test$table[, "chisq"],
+
+            df = ph_test$table[, "df"],
+
+            Pr = ph_test$table[, "p"],
+
+            row.names = NULL
+          )
+      }
+
+
+      ####################################################
+      ################ Store results #####################
+      ####################################################
+
+      result_row <- data.frame(
+        Seed = seed,
+
+        Biomarker = colName,
+
+        Response = response_col,
+
+        Estimate = marker_row$Estimate,
+
+        SE = marker_row$SE,
+
+        Wald_z = marker_row$Wald_z,
+
+        HR = marker_row$HR,
+
+        HR_lower95 = marker_row$HR_lower95,
+
+        HR_upper95 = marker_row$HR_upper95,
+
+        Pr = marker_row$Pr,
+
+        FDR = marker_row$FDR,
+
+
+        Cindex_baseline = baseline_cindex,
+
+        Cindex_biomarker = cindex_biomarker,
+
+        Delta_Cindex =
+          cindex_biomarker - baseline_cindex,
+
+
+        Cindex_SE_baseline =
+          baseline_concordance$SE,
+
+        Cindex_SE_biomarker =
+          biomarker_concordance$SE,
+
+        Comparable_pairs =
+          biomarker_concordance$Comparable_pairs,
+
+
+        ANOVA_chisq = anova_chisq,
+
+        ANOVA_df = anova_df,
+
+        ANOVA_p_value = anova_cox,
+
+
+        Train_AIC_baseline =
+          AIC(baseline_model_balanced),
+
+        Train_AIC_biomarker =
+          AIC(cox_biomarker),
+
+        Train_BIC_baseline =
+          BIC(baseline_model_balanced),
+
+        Train_BIC_biomarker =
+          BIC(cox_biomarker),
+
+
+        Train_logLik_baseline =
+          as.numeric(logLik(baseline_model_balanced)),
+
+        Train_logLik_biomarker =
+          as.numeric(logLik(cox_biomarker)),
+
+
+        PH_baseline_p = baseline_ph_p,
+
+        PH_global_p = global_ph_p,
+
+        PH_biomarker_p = biomarker_ph_p,
+
+
+        Train_events =
+          sum(model_data[[response_col]]),
+
+        Test_events =
+          sum(temp_test[[response_col]]),
+
+
+        Significant =
+          marker_row$Pr < individual_p_threshold,
+
+        stringsAsFactors = FALSE
+      )
+
+
+      results_list[[length(results_list) + 1L]] <-
+        result_row
+
+      predictor_results[[length(predictor_results) + 1L]] <-
+        coef_df
+
+
+      prediction_key <- paste(
+        seed,
+        response_col,
+        colName,
+        sep = "_"
+      )
+
+
+      prediction_storage[[prediction_key]] <- list(
+        time = temp_test[[time_col]],
+        event = temp_test[[response_col]],
+
+        baseline_risk = baseline_risk,
+        biomarker_risk = biomarker_risk,
+
+        cindex = cindex_biomarker,
+        baseline_cindex = baseline_cindex,
+
+        seed = seed,
+        biomarker = colName,
+        response = response_col,
+
+        row_id = temp_test$row_id
+      )
+
+    }, error = function(e) {
+
+      failed_models[[length(failed_models) + 1L]] <<-
+        data.frame(
+          Seed = seed,
+          Response = response_col,
+          Biomarker = colName,
+          Reason = conditionMessage(e)
+        )
+
+      message(
+        "Skipped seed ",
+        seed,
+        ", biomarker ",
+        colName,
+        ": ",
+        conditionMessage(e)
+      )
+    })
+  }
+
+} # ---------------- END OF 50-SEED LOOP ----------------
+
+
+###############################
+#### Combine all results ######
+###############################
+
+results <- bind_rows(results_list)
+
+predictor_results <- bind_rows(predictor_results)
+
+ph_results <- bind_rows(ph_results)
+
+failed_models <- bind_rows(failed_models)
+
+
+if (nrow(failed_models) > 0) {
+
+  write_xlsx(
+    failed_models,
+    "Individually Selected Predictors/Failed_Cox_Models.xlsx"
+  )
+}
+
+
+if (nrow(results) == 0) {
+  stop("No individual Cox models were successfully fitted.")
+}
+
+
+###############################
+#### Summary across seeds #####
+###############################
+
+summary_results <-
+  results %>%
+
+  group_by(
+    Response,
+    Biomarker
+  ) %>%
+
+  summarise(
+    Successful_splits = n(),
+
+    Valid_Cindex_splits =
+      sum(is.finite(Cindex_biomarker)),
+
+
+    Mean_Estimate = safe_mean(Estimate),
+
+    SD_Estimate = safe_sd(Estimate),
+
+    Mean_SE = safe_mean(SE),
+
+    Mean_Wald_z = safe_mean(Wald_z),
+
+
+    Mean_HR = safe_mean(HR),
+
+    Lower95_HR = safe_quantile(HR, 0.025),
+
+    Upper95_HR = safe_quantile(HR, 0.975),
+
+
+    Mean_Pr = safe_mean(Pr),
+
+    Median_Pr = safe_median(Pr),
+
+    Mean_FDR = safe_mean(FDR),
+
+
+    Mean_Cindex_baseline =
+      safe_mean(Cindex_baseline),
+
+    Lower95_Cindex_baseline =
+      safe_quantile(Cindex_baseline, 0.025),
+
+    Upper95_Cindex_baseline =
+      safe_quantile(Cindex_baseline, 0.975),
+
+
+    Mean_Cindex_biomarker =
+      safe_mean(Cindex_biomarker),
+
+    Lower95_Cindex_biomarker =
+      safe_quantile(Cindex_biomarker, 0.025),
+
+    Upper95_Cindex_biomarker =
+      safe_quantile(Cindex_biomarker, 0.975),
+
+
+    Mean_Delta_Cindex =
+      safe_mean(Delta_Cindex),
+
+    Lower95_Delta_Cindex =
+      safe_quantile(Delta_Cindex, 0.025),
+
+    Upper95_Delta_Cindex =
+      safe_quantile(Delta_Cindex, 0.975),
+
+
+    Median_ANOVA =
+      safe_median(ANOVA_p_value),
+
+
+    Mean_Train_AIC_baseline =
+      safe_mean(Train_AIC_baseline),
+
+    Mean_Train_AIC_biomarker =
+      safe_mean(Train_AIC_biomarker),
+
+    Mean_Train_BIC_baseline =
+      safe_mean(Train_BIC_baseline),
+
+    Mean_Train_BIC_biomarker =
+      safe_mean(Train_BIC_biomarker),
+
+
+    Median_PH_global_p =
+      safe_median(PH_global_p),
+
+    Median_PH_biomarker_p =
+      safe_median(PH_biomarker_p),
+
+    PH_biomarker_tested_splits =
+      sum(is.finite(PH_biomarker_p)),
+
+    PH_biomarker_significant_frequency =
+      sum(PH_biomarker_p < 0.05, na.rm = TRUE),
+
+
+    Significant_frequency =
+      sum(Significant, na.rm = TRUE),
+
+    Significant_percent =
+      round(
+        100 * sum(Significant, na.rm = TRUE) / n_seeds,
+        1
+      ),
+
+    .groups = "drop"
+  )
+
+
+###############################
+##### Predictor summary #######
+###############################
+
+predictor_summary <-
+  predictor_results %>%
+
+  group_by(
+    Response,
+    Biomarker,
+    Predictor
+  ) %>%
+
+  summarise(
+    Successful_splits = n(),
+
+    Mean_Estimate = safe_mean(Estimate),
+
+    SD_Estimate = safe_sd(Estimate),
+
+    Mean_SE = safe_mean(SE),
+
+    Mean_Wald_z = safe_mean(Wald_z),
+
+
+    # Arithmetic mean of the per-split hazard ratios.
+    Mean_HR = safe_mean(HR),
+
+    Lower95_HR = safe_quantile(HR, 0.025),
+
+    Upper95_HR = safe_quantile(HR, 0.975),
+
+
+    Mean_Pr = safe_mean(Pr),
+
+    Median_Pr = safe_median(Pr),
+
+    Mean_FDR = safe_mean(FDR),
+
+
+    Significant_frequency =
+      sum(
+        Pr < predictor_p_threshold,
+        na.rm = TRUE
+      ),
+
+    Significant_percent =
+      100 *
+      sum(
+        Pr < predictor_p_threshold,
+        na.rm = TRUE
+      ) / n_seeds,
+
+
+    FDR_Significant_frequency =
+      sum(
+        FDR < predictor_p_threshold,
+        na.rm = TRUE
+      ),
+
+    FDR_Significant_percent =
+      round(
+        100 *
+        sum(
+          FDR < predictor_p_threshold,
+          na.rm = TRUE
+        ) / n_seeds,
+        1
+      ),
+
+    .groups = "drop"
+  ) %>%
+
+  mutate(
+    HR_display = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_HR,
+      Lower95_HR,
+      Upper95_HR
+    )
+  )
+
+
+###############################
+##### Select Top 5 ############
+###############################
+
+robust_results <-
+  summary_results %>%
+
+  filter(
+    Significant_frequency >= min_frequency,
+    Mean_Delta_Cindex > 0
+  ) %>%
+
+  arrange(
+    desc(Significant_frequency),
+    desc(Mean_Delta_Cindex),
+    desc(Mean_Cindex_biomarker),
+    Mean_Pr
+  )
+
+
+###############################
+#### Display version ##########
+###############################
+
+robust_results_display <-
+  robust_results %>%
+
+  mutate(
+    Mean_Cindex_baseline = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_Cindex_baseline,
+      Lower95_Cindex_baseline,
+      Upper95_Cindex_baseline
+    ),
+
+    Mean_Cindex_biomarker = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_Cindex_biomarker,
+      Lower95_Cindex_biomarker,
+      Upper95_Cindex_biomarker
+    ),
+
+    Mean_Delta_Cindex = sprintf(
+      "%.3f (%.3f–%.3f)",
+      Mean_Delta_Cindex,
+      Lower95_Delta_Cindex,
+      Upper95_Delta_Cindex
+    )
+  ) %>%
+
+  select(
+    Response,
+    Biomarker,
+
+    Successful_splits,
+
+    Mean_Cindex_baseline,
+    Mean_Cindex_biomarker,
+    Mean_Delta_Cindex,
+
+    Median_ANOVA,
+
+    Median_PH_biomarker_p,
+
+    Significant_frequency,
+    Significant_percent
+  )
+
+
+top5 <-
+  robust_results %>%
+  slice_head(n = 5)
+
+
+###############################
+##### HTML table ##############
+###############################
+
+robust_widget <- datatable(
+  robust_results_display,
+
+  rownames = FALSE,
+
+  caption = htmltools::tags$caption(
+    style = paste(
+      "caption-side: top;",
+      "text-align: left;",
+      "font-weight: bold;"
+    ),
+
+    paste(
+      "Average Cox performance across",
+      n_seeds,
+      "random stratified 70/30 train/test splits"
+    )
+  ),
+
+  extensions = "Buttons",
+
+  options = list(
+    pageLength = 50,
+    autoWidth = TRUE,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel"),
+    order = list()
+  )
+)
+
+
+numeric_columns <- names(
+  robust_results_display
+)[
+  vapply(
+    robust_results_display,
+    is.numeric,
+    logical(1)
+  )
+]
+
+
+if (length(numeric_columns) > 0) {
+
+  robust_widget <- formatRound(
+    robust_widget,
+    columns = numeric_columns,
+    digits = 3
+  )
+}
+
+
+htmltools::tagList(
+  htmltools::tags$details(
+
+    htmltools::tags$summary(
+      style = "font-size:1.8em;",
+
+      paste(
+        "Robust Biomarkers Across",
+        n_seeds,
+        "Random Stratified 70/30 Splits"
+      )
+    ),
+
+    htmltools::tags$p(
+      paste(
+        "Ranges are the 2.5th–97.5th percentiles across splits,",
+        "not confidence intervals."
+      )
+    ),
+
+    robust_widget
+  )
+)
+
+
+###############################
+##### Save Excel files ########
+###############################
+
+write_xlsx(
+  results,
+  "Individually Selected Predictors/Individual_Biomarkers_AllSeeds.xlsx"
+)
+
+write_xlsx(
+  summary_results,
+  "Individually Selected Predictors/Individual_Biomarkers_Summary.xlsx"
+)
+
+write_xlsx(
+  robust_results_display,
+  "Individually Selected Predictors/Robust_Biomarkers.xlsx"
+)
+
+write_xlsx(
+  predictor_results,
+  "Individually Selected Predictors/Predictor_Coefficients_AllSeeds.xlsx"
+)
+
+write_xlsx(
+  predictor_summary,
+  "Individually Selected Predictors/Predictor_Coefficients_Summary.xlsx"
+)
+
+if (nrow(ph_results) > 0) {
+
+  write_xlsx(
+    ph_results,
+    "Individually Selected Predictors/Proportional_Hazards_Tests.xlsx"
+  )
+}
+
+saveRDS(
+  prediction_storage,
+  "Individually Selected Predictors/Individual_Cox_Predictions.rds"
+)
+
+
+###############################
+##### Representative plots ####
+###############################
+
+cat(
+  paste0(
+    "<details><summary style='font-size:1.8em;'>",
+    "Representative C-index Results (Top 5 Biomarkers)",
+    "</summary><br>\n\n"
+  )
+)
+
+
+if (nrow(top5) == 0) {
+
+  cat(
+    "No biomarkers met the specified robustness criteria.\n\n"
+  )
+
+} else {
+
+  for (i in seq_len(nrow(top5))) {
+
+    biomarker <- top5$Biomarker[i]
+
+    target_cindex <- top5$Mean_Cindex_biomarker[i]
+
+
+    tmp <-
+      results %>%
+
+      filter(
+        Biomarker == biomarker,
+        Response == top5$Response[i],
+        is.finite(Cindex_biomarker)
+      )
+
+
+    if (nrow(tmp) == 0) {
+      next
+    }
+
+
+    closest_seed <- tmp$Seed[
+      which.min(
+        abs(
+          tmp$Cindex_biomarker - target_cindex
+        )
+      )
+    ]
+
+
+    representative_row <- tmp[
+      tmp$Seed == closest_seed,
+      ,
+      drop = FALSE
+    ]
+
+
+    # A standard ROC curve is not appropriate here.
+    # Display test C-index across splits and highlight
+    # the split closest to the mean.
+    representative_plot <-
+      ggplot(
+        tmp,
+        aes(
+          x = Seed,
+          y = Cindex_biomarker
+        )
+      ) +
+
+      geom_point(
+        color = "#2166AC",
+        alpha = 0.75,
+        size = 2
+      ) +
+
+      geom_hline(
+        yintercept = target_cindex,
+        linetype = "dashed",
+        color = "grey40"
+      ) +
+
+      geom_point(
+        data = representative_row,
+        color = "#B2182B",
+        size = 3
+      ) +
+
+      coord_cartesian(
+        ylim = c(0, 1)
+      ) +
+
+      theme_minimal(
+        base_size = 12
+      ) +
+
+      labs(
+        title = biomarker,
+
+        subtitle = paste0(
+          "Representative seed = ",
+          closest_seed,
+          " | Test C-index = ",
+          sprintf(
+            "%.3f",
+            representative_row$Cindex_biomarker[1]
+          )
+        ),
+
+        x = "Split seed",
+
+        y = "Independent test C-index",
+
+        caption = paste(
+          "Dashed line: mean test C-index.",
+          "Red point: representative split, for illustration only."
+        )
+      )
+
+
+    print(representative_plot)
+
+    cat("\n\n")
+  }
+}
+
+
+cat("\n</details>\n")
+
+
+###############################
+##### Clean-up ################
+###############################
+
+# Keep data$row_id, splits, time_col and response_cols.
+# Subsequent elastic-net and de-novo chunks reuse these objects.
+
+rm(results_list)
+```
+
+## Obtaining the estimates and p-values of all predictors included in the baseline model together with the selected significant biomarker
+
+```{r predictor-summaries, results='asis'}
+# Load necessary libraries for table display.
+library(knitr)
+library(kableExtra)
+
+
+###############################
+#### Predictor summaries ######
+###############################
+
+dir.create(
+  "Models with Individually Selected Biomarkers",
+  showWarnings = FALSE
+)
+
+
+sorted_results <-
+  robust_results %>%
+
+  arrange(
+    desc(Significant_frequency),
+    desc(Mean_Delta_Cindex),
+    desc(Mean_Cindex_biomarker)
+  )
+
+
+if (nrow(sorted_results) == 0) {
+
+  cat(
+    "<p>No biomarkers met the specified robustness criteria.</p>"
+  )
+}
+
+
+for (response_var in unique(sorted_results$Response)) {
+
+  cat(
+    paste0(
+      '<details><summary style="font-size:1.2em;"><strong>',
+      escape_html(response_var),
+      '</strong></summary>',
+      '<div style="margin-left:20px;margin-top:10px;">'
+    )
+  )
+
+
+  response_results <-
+    sorted_results %>%
+    filter(Response == response_var)
+
+
+  for (i in seq_len(nrow(response_results))) {
+
+    biomarker <- response_results$Biomarker[i]
+
+    model_name <- paste(
+      biomarker,
+      response_var,
+      sep = "_"
+    )
+
+
+    predictors_df <-
+      predictor_summary %>%
+
+      filter(
+        Response == response_var,
+        Biomarker == biomarker
+      ) %>%
+
+      mutate(
+        `β ± SD` = sprintf(
+          "%.3f ± %.3f",
+          Mean_Estimate,
+          SD_Estimate
+        ),
+
+        Hazard_Ratio = HR_display
+      ) %>%
+
+      select(
+        Predictor,
+        Successful_splits,
+        `β ± SD`,
+        Hazard_Ratio,
+        Mean_SE,
+        Mean_Wald_z,
+        Median_Pr,
+        Mean_FDR,
+        Significant_percent,
+        FDR_Significant_percent
+      )
+
+
+    if (nrow(predictors_df) == 0) {
+      next
+    }
+
+
+    ####################################################
+    #### Collapsible section ###########################
+    ####################################################
+
+    cat(
+      paste0(
+        '<details><summary style="font-size:1.1em;">',
+        escape_html(biomarker),
+        "</summary>",
+        '<div style="margin-left:20px;margin-top:10px;">'
+      )
+    )
+
+
+    ####################################################
+    #### Biomarker performance #########################
+    ####################################################
+
+    cat(
+      paste0(
+
+        "<b>Significant frequency (p &lt; ",
+        individual_p_threshold,
+        "):</b> ",
+        response_results$Significant_frequency[i],
+        "/",
+        n_seeds,
+        " (",
+        response_results$Significant_percent[i],
+        "%)<br>",
+
+
+        "<b>Mean baseline C-index:</b> ",
+        round(
+          response_results$Mean_Cindex_baseline[i],
+          3
+        ),
+        "<br>",
+
+
+        "<b>Mean biomarker C-index:</b> ",
+        round(
+          response_results$Mean_Cindex_biomarker[i],
+          3
+        ),
+        " (empirical range: ",
+        round(
+          response_results$Lower95_Cindex_biomarker[i],
+          3
+        ),
+        "–",
+        round(
+          response_results$Upper95_Cindex_biomarker[i],
+          3
+        ),
+        ")<br>",
+
+
+        "<b>Mean ΔC-index:</b> ",
+        round(
+          response_results$Mean_Delta_Cindex[i],
+          3
+        ),
+        " (empirical range: ",
+        round(
+          response_results$Lower95_Delta_Cindex[i],
+          3
+        ),
+        "–",
+        round(
+          response_results$Upper95_Delta_Cindex[i],
+          3
+        ),
+        ")<br>",
+
+
+        "<b>Median likelihood-ratio ANOVA p-value:</b> ",
+        format.pval(
+          response_results$Median_ANOVA[i],
+          digits = 3,
+          eps = 0.001
+        ),
+        "<br>",
+
+
+        "<b>Median biomarker PH-test p-value:</b> ",
+        format.pval(
+          response_results$Median_PH_biomarker_p[i],
+          digits = 3,
+          eps = 0.001
+        ),
+        "<br><br>"
+
+      )
+    )
+
+
+    ####################################################
+    #### Save Excel ####################################
+    ####################################################
+
+    file_name <- paste0(
+      "Models with Individually Selected Biomarkers/",
+
+      gsub(
+        "[^[:alnum:]_]",
+        "_",
+        model_name
+      ),
+
+      ".xlsx"
+    )
+
+
+    write_xlsx(
+      predictors_df,
+      path = file_name
+    )
+
+
+    cat(
+      paste0(
+        '<a href="',
+        escape_html(file_name),
+        '" download>',
+        'Download averaged predictor table (.xlsx)',
+        '</a><br><br>'
+      )
+    )
+
+
+    ####################################################
+    #### HTML table ####################################
+    ####################################################
+
+    predictors_display <-
+      predictors_df %>%
+
+      mutate(
+        Median_Pr = format.pval(
+          Median_Pr,
+          digits = 3,
+          eps = 0.001
+        ),
+
+        Mean_FDR = format.pval(
+          Mean_FDR,
+          digits = 3,
+          eps = 0.001
+        )
+      )
+
+
+    kable(
+      predictors_display,
+
+      format = "html",
+
+      digits = 3,
+
+      caption = paste(
+        "Cox predictor summaries across",
+        n_seeds,
+        "random stratified 70/30 train/test splits"
+      ),
+
+      align = "c",
+
+      escape = TRUE
+    ) %>%
+
+      kable_styling(
+        bootstrap_options = c(
+          "striped",
+          "hover",
+          "condensed",
+          "responsive"
+        ),
+
+        full_width = FALSE,
+
+        position = "center"
+      ) %>%
+
+      column_spec(
+        1,
+        bold = TRUE
+      ) %>%
+
+      row_spec(
+        0,
+        bold = TRUE,
+        color = "white",
+        background = "black"
+      ) %>%
+
+      print()
+
+
+    cat(
+      paste0(
+        "<p><small>",
+        "Hazard_Ratio reports the arithmetic mean HR and ",
+        "the 2.5th–97.5th percentiles across splits. ",
+        "These ranges are descriptive, not confidence intervals. ",
+        "Within-fit HR confidence intervals are available in ",
+        "Predictor_Coefficients_AllSeeds.xlsx. ",
+        "Mean_FDR retains the original within-model correction. ",
+        "Median p-values, mean FDR and median PH p-values are ",
+        "descriptive summaries, not pooled statistical tests. ",
+        "A nonsignificant PH test does not prove proportional hazards.",
+        "</small></p>"
+      )
+    )
+
+
+    cat("</div></details><br>")
+  }
+
+
+  cat("</div></details><br>")
+}
+```
+
+
+
+
+A categorical predictor with four levels produces three coefficients when treatment contrasts are used. Each coefficient compares that category with the reference category. In Cox regression, exponentiating the coefficient gives the hazard ratio relative to the reference category.
+
+## Package Loading to perform Elastic Net
+
+```{r cox-elastic-packages, fig.width=12, fig.height=8}
+library(survival)
+library(glmnet)
+library(rsample)
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(writexl)
+library(broom)
+
+# Biomarkers and the adjustment molecule were already standardized.
+# Preserve the preceding section's scaling convention:
+# standardize = FALSE in glmnet.
+```
+
+## Performing Elastic Net and obtaining the cross-validation plots
+
+The mandatory-only machine-learning baseline is a Ridge Cox model.
+
+The full Cox elastic-net model contains mandatory predictors with zero penalty and candidate biomarkers with a nonzero penalty. Internal cross-validation selects lambda using the C-index.
+
+All models reuse the same training/test splits created in the individual-biomarker section. Test observations are used only for performance evaluation.
+
+The de-novo analysis refits each selected biomarker panel, together with all mandatory predictors, using ordinary Cox regression.
+
+```{r cox-elastic-analysis, results='asis'}
+############################################################
+################ Elastic Net initialization ################
+############################################################
+
+library(glmnet)
+library(survival)
+library(rsample)
+library(kableExtra)
+library(dplyr)
+library(writexl)
+library(broom)
+
+
+############################################################
+################ User settings #############################
+############################################################
+
+response_cols <- colnames(data)[columns_response]
+
+response_col <- response_cols[[1]]
+
+time_col <- colnames(data)[columns_time]
+
+exclude_columns <- c(
+  response_cols,
+  time_col,
+  "row_id",
+  ".split_event"
+)
+
+main_predictors <- setdiff(
+  colnames(data)[columns_predictors],
+  exclude_columns
+)
+
+biomarker_names <- setdiff(
+  names(data_Biomarker),
+  exclude_columns
+)
+
+# Use the values defined in the first section:
+# alpha_values <- seq(0, 1, by = 0.1)
+# nfolds_values <- c(10, 20)
+# n_seeds <- 50
+
+baseline_nfolds <- 10L
+
+if (
+  !exists("splits") ||
+  length(splits) != n_seeds
+) {
+  stop("Run the first Cox section to create the shared splits.")
+}
+
+
+required_helpers <- c(
+  "make_cox_formula",
+  "calculate_cindex",
+  "fit_cox_checked",
+  "calculate_ph_test",
+  "safe_mean",
+  "safe_median",
+  "safe_sd",
+  "safe_quantile",
+  "escape_html"
+)
+
+missing_helpers <- required_helpers[
+  !vapply(
+    required_helpers,
+    exists,
+    logical(1),
+    mode = "function"
+  )
+]
+
+if (length(missing_helpers) > 0) {
+  stop(
+    "Run the first Cox section first. Missing helpers: ",
+    paste(missing_helpers, collapse = ", ")
+  )
+}
+
+if (
+  length(intersect(main_predictors, biomarker_names)) > 0
+) {
+  stop("Mandatory predictors and candidate biomarkers overlap.")
+}
+
+
+############################################################
+############ Preserve individual-biomarker results #########
+############################################################
+
+individual_results <- results
+
+individual_summary_results <- summary_results
+
+
+############################################################
+################ Storage ###################################
+############################################################
+
+results_list <- list()
+
+coef_list <- list()
+
+selected_variables_list <- list()
+
+elastic_prediction_storage <- list()
+
+baseline_results_list <- list()
+
+baseline_coef_list <- list()
+
+design_mapping_list <- list()
+
+warnings <- character()
+
+failure_list <- list()
+
+
+############################################################
+############ Store cv.glmnet objects ########################
+############################################################
+
+cv_models <- list()
+
+baseline_cv_models <- list()
+
+cv_fold_storage <- list()
+
+
+############################################################
+############### De novo refitting storage ##################
+############################################################
+
+refit_results_list <- list()
+
+refit_coef_list <- list()
+
+refit_prediction_storage <- list()
+
+refit_ph_list <- list()
+
+
+############################################################
+################ Additional helpers #########################
+############################################################
+
+make_cox_folds <- function(events, k, seed_value) {
+
+  event_counts <- table(
+    factor(events, levels = c(0, 1))
+  )
+
+  if (any(event_counts < k)) {
+    stop(
+      "Not enough events or censored observations for ",
+      k,
+      " folds with both represented in every fold."
+    )
+  }
+
+  set.seed(seed_value)
+
+  fold_id <- integer(length(events))
+
+  for (event_value in c(0, 1)) {
+
+    indices <- which(events == event_value)
+
+    fold_id[indices] <- sample(
+      rep(
+        seq_len(k),
+        length.out = length(indices)
+      )
+    )
+  }
+
+  fold_id
+}
+
+
+fit_cox_cv <- function(
+  x,
+  y,
+  alpha,
+  fold_id,
+  penalty_factor
+) {
+
+  arguments <- list(
+    x = x,
+    y = y,
+
+    family = "cox",
+
+    alpha = alpha,
+
+    nfolds = max(fold_id),
+
+    foldid = fold_id,
+
+    type.measure = "C",
+
+    penalty.factor = penalty_factor,
+
+    standardize = FALSE
+  )
+
+  # Older glmnet versions use Breslow ties automatically.
+  # Newer versions may offer a choice: explicitly match coxph.
+  if (
+    "cox.ties" %in%
+      names(formals(glmnet::glmnet))
+  ) {
+    arguments$cox.ties <- "breslow"
+  }
+
+  cvfit <- withCallingHandlers(
+
+    do.call(
+      glmnet::cv.glmnet,
+      arguments
+    ),
+
+    warning = function(w) {
+
+      if (
+        grepl(
+          "converg|infinite|overflow|numerical",
+          conditionMessage(w),
+          ignore.case = TRUE
+        )
+      ) {
+        stop(
+          conditionMessage(w),
+          call. = FALSE
+        )
+      }
+    }
+  )
+
+  if (
+    !is.finite(cvfit$lambda.min) ||
+    !any(is.finite(cvfit$cvm))
+  ) {
+    stop("Cox cross-validation did not return valid results.")
+  }
+
+  cvfit
+}
+
+
+get_cox_diagnostics <- function(fit) {
+
+  model_summary <- summary(fit)
+
+  c(
+    Train_logLik = as.numeric(logLik(fit)),
+
+    Train_AIC = AIC(fit),
+
+    Train_BIC = BIC(fit),
+
+    Train_Cindex =
+      unname(model_summary$concordance[1]),
+
+    Train_LR_p =
+      unname(model_summary$logtest["pvalue"]),
+
+    Train_Wald_p =
+      unname(model_summary$waldtest["pvalue"]),
+
+    Train_Score_p =
+      unname(model_summary$sctest["pvalue"]),
+
+    Training_events = fit$nevent,
+
+    Coefficients = length(coef(fit)),
+
+    Events_per_coefficient =
+      fit$nevent / length(coef(fit))
+  )
+}
+
+
+record_failure <- function(
+  seed,
+  response,
+  alpha,
+  folds,
+  stage,
+  reason
+) {
+
+  failure_list[[length(failure_list) + 1L]] <<-
+    data.frame(
+      Seed = seed,
+      Response = response,
+      Alpha = alpha,
+      nfolds = folds,
+      Stage = stage,
+      Reason = reason,
+      stringsAsFactors = FALSE
+    )
+}
+
+
+############################################################
+################ Warning handler ###########################
+############################################################
+
+warning_context <- "Initialization"
+
+capture_warning <- function(w) {
+
+  warnings <<- c(
+    warnings,
+    paste0(
+      warning_context,
+      ": ",
+      conditionMessage(w)
+    )
+  )
+
+  invokeRestart("muffleWarning")
+}
+
+
+############################################################
+############## Start warning capture #######################
+############################################################
+
+withCallingHandlers({
+
+  for (seed in seq_len(n_seeds)) {
+
+    cat("\n=========================\n")
+    cat("Seed:", seed, "\n")
+    cat("=========================\n")
+
+    warning_context <- paste("Seed", seed)
+
+
+    ########################################################
+    ########### Reuse predefined stratified split ###########
+    ########################################################
+
+    split <- splits[[seed]]
+
+    train_raw <- rsample::training(split)
+
+    test_data <- rsample::testing(split)
+
+    train_raw$.split_event <- NULL
+
+    test_data$.split_event <- NULL
+
+
+    ########################################################
+    ########### Training data / weights ####################
+    ########################################################
+
+    # Standard Cox analysis: retain all training observations.
+    train_data <- train_raw
+
+    sample_weights <- rep(
+      1,
+      nrow(train_data)
+    )
+
+    train_events <- train_data[[response_col]]
+
+    test_events <- test_data[[response_col]]
+
+    train_times <- train_data[[time_col]]
+
+    test_times <- test_data[[time_col]]
+
+    if (
+      any(!is.finite(train_times)) ||
+      any(!is.finite(test_times)) ||
+      any(train_times <= 0) ||
+      any(test_times <= 0)
+    ) {
+      stop("Follow-up times must be finite and strictly positive.")
+    }
+
+    y_train <- survival::Surv(
+      train_times,
+      train_events
+    )
+
+    y_test <- survival::Surv(
+      test_times,
+      test_events
+    )
+
+
+    ########################################################
+    ########### Check predictor eligibility #################
+    ########################################################
+
+    for (variable in main_predictors) {
+
+      if (
+        length(unique(train_data[[variable]])) < 2
+      ) {
+        stop(
+          "Constant mandatory predictor in seed ",
+          seed,
+          ": ",
+          variable
+        )
+      }
+
+      if (is.factor(train_data[[variable]])) {
+
+        if (
+          any(
+            table(train_data[[variable]]) == 0
+          )
+        ) {
+          stop(
+            "A categorical level is absent from training seed ",
+            seed,
+            ": ",
+            variable
+          )
+        }
+      }
+    }
+
+    # A biomarker may vary globally but be constant within a split.
+    active_biomarkers <- biomarker_names[
+      vapply(
+        train_data[, biomarker_names, drop = FALSE],
+
+        function(x) {
+          is.numeric(x) &&
+            all(is.finite(x)) &&
+            sd(x) > 0
+        },
+
+        logical(1)
+      )
+    ]
+
+    if (!length(active_biomarkers)) {
+      stop("No varying biomarkers in training seed ", seed)
+    }
+
+
+    ########################################################
+    ########### Design matrices #############################
+    ########################################################
+
+    predictor_variables <- c(
+      main_predictors,
+      active_biomarkers
+    )
+
+    x_train <- as.data.frame(
+      train_data[, predictor_variables, drop = FALSE]
+    )
+
+    x_test <- as.data.frame(
+      test_data[, predictor_variables, drop = FALSE]
+    )
+
+    # Temporary safe names are used ONLY for matrix construction.
+    # Original names remain unchanged in train_data/test_data.
+    matrix_aliases <- sprintf(
+      "X%04d",
+      seq_along(predictor_variables)
+    )
+
+    names(x_train) <- matrix_aliases
+
+    names(x_test) <- matrix_aliases
+
+    categorical_aliases <- names(x_train)[
+      vapply(x_train, is.factor, logical(1))
+    ]
+
+    matrix_contrasts <- NULL
+
+    if (length(categorical_aliases) > 0) {
+
+      matrix_contrasts <- lapply(
+        setNames(
+          categorical_aliases,
+          categorical_aliases
+        ),
+
+        function(variable) {
+          contrasts(
+            x_train[[variable]],
+            contrasts = TRUE
+          )
+        }
+      )
+    }
+
+    # Construct K-1 factor contrasts, then remove the matrix
+    # intercept. The Cox model itself has no intercept.
+    train_design <- model.matrix(
+      ~ .,
+      data = x_train,
+      contrasts.arg = matrix_contrasts
+    )
+
+    test_design <- model.matrix(
+      ~ .,
+      data = x_test,
+      contrasts.arg = matrix_contrasts
+    )
+
+    design_assign <- attr(
+      train_design,
+      "assign"
+    )[-1]
+
+    x_train_matrix <- train_design[
+      ,
+      -1,
+      drop = FALSE
+    ]
+
+    x_test_matrix <- test_design[
+      ,
+      colnames(x_train_matrix),
+      drop = FALSE
+    ]
+
+    if (
+      any(!is.finite(x_train_matrix)) ||
+      any(!is.finite(x_test_matrix))
+    ) {
+      stop("Non-finite values in the predictor matrices.")
+    }
+
+    # Map each matrix column back to its original variable.
+    original_variable <- predictor_variables[
+      design_assign
+    ]
+
+    # Human-readable names, including factor-level suffixes.
+    predictor_names <- vapply(
+      seq_along(design_assign),
+
+      function(j) {
+
+        alias <- matrix_aliases[
+          design_assign[j]
+        ]
+
+        suffix <- substring(
+          colnames(x_train_matrix)[j],
+          nchar(alias) + 1L
+        )
+
+        paste0(
+          original_variable[j],
+          suffix
+        )
+      },
+
+      character(1)
+    )
+
+    columns_predictors_x <- which(
+      original_variable %in% main_predictors
+    )
+
+    mandatory_flags <-
+      original_variable %in% main_predictors
+
+    if (length(columns_predictors_x) < 2) {
+      stop(
+        "The glmnet Ridge baseline requires at least two design columns."
+      )
+    }
+
+    design_mapping_list[[
+      length(design_mapping_list) + 1L
+    ]] <-
+      data.frame(
+        Seed = seed,
+        Matrix_column = colnames(x_train_matrix),
+        Variable = predictor_names,
+        Original_variable = original_variable,
+        Mandatory = mandatory_flags
+      )
+
+
+    ########################################################
+    ########### Shared internal CV folds ####################
+    ########################################################
+
+    fold_ids <- list()
+
+    for (
+      k in sort(
+        unique(
+          c(nfolds_values, baseline_nfolds)
+        )
+      )
+    ) {
+
+      fold_ids[[as.character(k)]] <-
+        make_cox_folds(
+          events = train_events,
+          k = k,
+          seed_value = seed + 1000L * k
+        )
+    }
+
+    cv_fold_storage[[
+      paste(response_col, seed, sep = "_")
+    ]] <- list(
+      row_id = train_data$row_id,
+      fold_ids = fold_ids
+    )
+
+
+    ########################################################
+    ################ Baseline Ridge Cox ####################
+    ########################################################
+
+    warning_context <- paste(
+      "Seed",
+      seed,
+      "baseline Ridge Cox"
+    )
+
+    baseline_matrix <- x_train_matrix[
+      ,
+      columns_predictors_x,
+      drop = FALSE
+    ]
+
+    baseline_test_matrix <- x_test_matrix[
+      ,
+      columns_predictors_x,
+      drop = FALSE
+    ]
+
+    baseline_cvfit <- fit_cox_cv(
+      x = baseline_matrix,
+
+      y = y_train,
+
+      alpha = 0,
+
+      fold_id = fold_ids[[
+        as.character(baseline_nfolds)
+      ]],
+
+      # Genuine Ridge comparator: mandatory predictors are
+      # all included but receive a Ridge penalty.
+      penalty_factor = rep(
+        1,
+        ncol(baseline_matrix)
+      )
+    )
+
+    baseline_lambda <-
+      baseline_cvfit$lambda.min
+
+    baseline_cv_models[[
+      paste(response_col, seed, sep = "_")
+    ]] <- baseline_cvfit
+
+    # cv.glmnet already fits a full-training glmnet path.
+    baseline_model <-
+      baseline_cvfit$glmnet.fit
+
+    baseline_predictions <- as.numeric(
+      predict(
+        baseline_model,
+
+        newx = baseline_test_matrix,
+
+        s = baseline_lambda,
+
+        type = "link"
+      )
+    )
+
+    baseline_concordance <- calculate_cindex(
+      times = test_times,
+      events = test_events,
+      risk_scores = baseline_predictions
+    )
+
+    baseline_cindex <-
+      baseline_concordance$Cindex
+
+    baseline_results_list[[
+      length(baseline_results_list) + 1L
+    ]] <-
+      data.frame(
+        Seed = seed,
+        Response = response_col,
+        nfolds = baseline_nfolds,
+        Lambda_min = baseline_lambda,
+        Lambda_1se = baseline_cvfit$lambda.1se,
+        Baseline_Cindex = baseline_cindex,
+        Cindex_SE = baseline_concordance$SE,
+        Comparable_pairs =
+          baseline_concordance$Comparable_pairs
+      )
+
+    baseline_coefs <- as.matrix(
+      coef(
+        baseline_model,
+        s = baseline_lambda
+      )
+    )[, 1]
+
+    baseline_coef_list[[
+      length(baseline_coef_list) + 1L
+    ]] <-
+      data.frame(
+        Seed = seed,
+        Response = response_col,
+        Variable = predictor_names[
+          columns_predictors_x
+        ],
+        Coefficient = as.numeric(baseline_coefs)
+      )
+
+
+    ########################################################
+    ########### Baseline ordinary Cox for refits ############
+    ########################################################
+
+    baseline_formula <- make_cox_formula(
+      time_col,
+      response_col,
+      main_predictors
+    )
+
+    baseline_cox <- fit_cox_checked(
+      baseline_formula,
+      train_data
+    )
+
+    baseline_predictions_cox <- as.numeric(
+      predict(
+        baseline_cox,
+        newdata = test_data,
+        type = "lp"
+      )
+    )
+
+    baseline_concordance_cox <- calculate_cindex(
+      times = test_times,
+      events = test_events,
+      risk_scores = baseline_predictions_cox
+    )
+
+    baseline_cindex_cox <-
+      baseline_concordance_cox$Cindex
+
+    baseline_diagnostics <-
+      get_cox_diagnostics(baseline_cox)
+
+    baseline_ph <- calculate_ph_test(
+      baseline_cox
+    )
+
+    baseline_ph_p <- if (!is.null(baseline_ph)) {
+      unname(baseline_ph$table["GLOBAL", "p"])
+    } else {
+      NA_real_
+    }
+
+
+    ########################################################
+    ########## Loop over nfolds #############################
+    ########################################################
+
+    for (nfolds_val in nfolds_values) {
+
+
+      ######################################################
+      ########### Loop over alpha ##########################
+      ######################################################
+
+      for (alpha_val in alpha_values) {
+
+        warning_context <- paste(
+          "Seed", seed,
+          "alpha", alpha_val,
+          "folds", nfolds_val
+        )
+
+        tryCatch({
+
+          penalty.factor <- rep(
+            1,
+            ncol(x_train_matrix)
+          )
+
+          penalty.factor[
+            columns_predictors_x
+          ] <- 0
+
+
+          ##################################################
+          ################ Fit Cox Elastic Net #############
+          ##################################################
+
+          cvfit <- fit_cox_cv(
+            x = x_train_matrix,
+            y = y_train,
+            alpha = alpha_val,
+
+            fold_id = fold_ids[[
+              as.character(nfolds_val)
+            ]],
+
+            penalty_factor = penalty.factor
+          )
+
+          lambda_min <- cvfit$lambda.min
+
+          lambda_1se <- cvfit$lambda.1se
+
+          lambda_index <- which.min(
+            abs(cvfit$lambda - lambda_min)
+          )
+
+          cv_cindex <- cvfit$cvm[lambda_index]
+
+          # With type.measure="C", lambda.min identifies
+          # the best CV C-index: higher C is better.
+
+
+          ##################################################
+          ############ Store CV model ######################
+          ##################################################
+
+          cv_key <- paste(
+            response_col,
+            alpha_val,
+            nfolds_val,
+            seed,
+            sep = "_"
+          )
+
+          cv_models[[cv_key]] <- cvfit
+
+
+          ##################################################
+          ################ Final model #####################
+          ##################################################
+
+          model <- cvfit$glmnet.fit
+
+
+          ##################################################
+          ################ Test predictions ################
+          ##################################################
+
+          predictions <- as.numeric(
+            predict(
+              model,
+              newx = x_test_matrix,
+              s = lambda_min,
+              type = "link"
+            )
+          )
+
+          concordance_result <- calculate_cindex(
+            times = test_times,
+            events = test_events,
+            risk_scores = predictions
+          )
+
+          cindex_value <-
+            concordance_result$Cindex
+
+          delta_cindex <-
+            cindex_value - baseline_cindex
+
+
+          ##################################################
+          ######## Number of selected predictors ###########
+          ##################################################
+
+          coefficient_matrix <- as.matrix(
+            coef(
+              model,
+              s = lambda_min
+            )
+          )
+
+          coef_vector <- coefficient_matrix[, 1]
+
+          # IMPORTANT: Cox coefficients have no intercept row.
+          # Do not discard coef_vector[1].
+          nonzero_flags <- coef_vector != 0
+
+          retained_flags <-
+            nonzero_flags | mandatory_flags
+
+          selected_predictors <- sum(
+            retained_flags
+          )
+
+          selected_biomarkers <- unique(
+            original_variable[
+              nonzero_flags & !mandatory_flags
+            ]
+          )
+
+          all_predictors <- unique(
+            c(
+              main_predictors,
+              selected_biomarkers
+            )
+          )
+
+
+          ##################################################
+          ######## Store model performance #################
+          ##################################################
+
+          results_list[[
+            length(results_list) + 1L
+          ]] <-
+            data.frame(
+              Seed = seed,
+              Response = response_col,
+              Alpha = alpha_val,
+              nfolds = nfolds_val,
+
+              Lambda_min = lambda_min,
+              Lambda_1se = lambda_1se,
+              CV_Cindex = cv_cindex,
+
+              Baseline_Cindex = baseline_cindex,
+
+              ElasticNet_Cindex = cindex_value,
+
+              Delta_Cindex = delta_cindex,
+
+              Baseline_Cindex_SE =
+                baseline_concordance$SE,
+
+              ElasticNet_Cindex_SE =
+                concordance_result$SE,
+
+              Comparable_pairs =
+                concordance_result$Comparable_pairs,
+
+              # Includes mandatory design columns.
+              Selected_predictors =
+                selected_predictors,
+
+              # Excludes mandatory predictors.
+              Selected_biomarkers =
+                length(selected_biomarkers),
+
+              Biomarker_panel = paste(
+                selected_biomarkers,
+                collapse = "; "
+              ),
+
+              stringsAsFactors = FALSE
+            )
+
+
+          ##################################################
+          ######## Store coefficients ######################
+          ##################################################
+
+          coef_df <- data.frame(
+            Seed = seed,
+            Response = response_col,
+            Alpha = alpha_val,
+            nfolds = nfolds_val,
+
+            Variable = predictor_names,
+
+            Original_variable = original_variable,
+
+            Coefficient = as.numeric(coef_vector),
+
+            Nonzero = as.logical(nonzero_flags),
+
+            Mandatory = mandatory_flags,
+
+            Selected = as.logical(retained_flags),
+
+            stringsAsFactors = FALSE
+          )
+
+          coef_list[[
+            length(coef_list) + 1L
+          ]] <- coef_df
+
+
+          ##################################################
+          ######## Store selected variables ################
+          ##################################################
+
+          selected_df <-
+            coef_df %>%
+
+            filter(Selected) %>%
+
+            select(
+              Seed,
+              Response,
+              Alpha,
+              nfolds,
+              Variable,
+              Original_variable,
+              Mandatory
+            )
+
+          selected_variables_list[[
+            length(selected_variables_list) + 1L
+          ]] <- selected_df
+
+
+          ##################################################
+          ######## Store Elastic Net predictions ###########
+          ##################################################
+
+          prediction_key <- paste(
+            seed,
+            response_col,
+            alpha_val,
+            nfolds_val,
+            sep = "_"
+          )
+
+          elastic_prediction_storage[[
+            prediction_key
+          ]] <- list(
+            time = test_times,
+            event = test_events,
+
+            risk = predictions,
+
+            baseline_risk = baseline_predictions,
+
+            cindex = cindex_value,
+
+            baseline_cindex = baseline_cindex,
+
+            row_id = test_data$row_id,
+
+            seed = seed,
+            response = response_col,
+            alpha = alpha_val,
+            nfolds = nfolds_val
+          )
+
+
+          ##################################################
+          ############### De novo Cox refit ################
+          ##################################################
+
+          # Original variable names are obtained directly
+          # from the design-column mapping, avoiding
+          # unreliable prefix matching of dummy names.
+          predictor_vars <- selected_biomarkers
+
+          full_formula <- make_cox_formula(
+            time_col,
+            response_col,
+            all_predictors
+          )
+
+
+          ##################################################
+          ############ Fit and evaluate full Cox ###########
+          ##################################################
+
+          refit_attempt <- tryCatch({
+
+            full_cox <- fit_cox_checked(
+              full_formula,
+              train_data
+            )
+
+            full_predictions <- as.numeric(
+              predict(
+                full_cox,
+                newdata = test_data,
+                type = "lp"
+              )
+            )
+
+            full_concordance <- calculate_cindex(
+              times = test_times,
+              events = test_events,
+              risk_scores = full_predictions
+            )
+
+            full_diagnostics <-
+              get_cox_diagnostics(full_cox)
+
+
+            ################################################
+            ############ Likelihood-ratio test #############
+            ################################################
+
+            anova_df <- length(coef(full_cox)) -
+              length(coef(baseline_cox))
+
+            if (anova_df == 0) {
+
+              anova_chisq <- 0
+
+              anova_p <- NA_real_
+
+            } else {
+
+              anova_chisq <- 2 * as.numeric(
+                logLik(full_cox) -
+                  logLik(baseline_cox)
+              )
+
+              if (anova_chisq < -1e-6) {
+                stop("Invalid nested-model partial-likelihood comparison.")
+              }
+
+              anova_chisq <- max(
+                0,
+                anova_chisq
+              )
+
+              anova_p <- pchisq(
+                anova_chisq,
+                df = anova_df,
+                lower.tail = FALSE
+              )
+            }
+
+
+            ################################################
+            ############ Proportional-hazards test ##########
+            ################################################
+
+            full_ph <- calculate_ph_test(full_cox)
+
+            full_ph_p <- if (!is.null(full_ph)) {
+
+              unname(
+                full_ph$table["GLOBAL", "p"]
+              )
+
+            } else {
+
+              NA_real_
+            }
+
+
+            ################################################
+            ############ Model coefficients ################
+            ################################################
+
+            tidy_model <-
+              broom::tidy(
+                full_cox,
+                conf.int = TRUE,
+                exponentiate = FALSE
+              ) %>%
+
+              mutate(
+                # Normalize presentation of nonstandard names
+                # for joining with selection-frequency tables.
+                term = gsub(
+                  "`",
+                  "",
+                  term,
+                  fixed = TRUE
+                ),
+
+                HR = exp(estimate),
+
+                HR_lower95 = exp(conf.low),
+
+                HR_upper95 = exp(conf.high),
+
+                FDR = p.adjust(
+                  p.value,
+                  method = "fdr"
+                ),
+
+                Seed = seed,
+                Response = response_col,
+                Alpha = alpha_val,
+                nfolds = nfolds_val
+              )
+
+
+            list(
+              ok = TRUE,
+
+              reason = "",
+
+              predictions = full_predictions,
+
+              concordance = full_concordance,
+
+              diagnostics = full_diagnostics,
+
+              anova_chisq = anova_chisq,
+
+              anova_df = anova_df,
+
+              anova_p = anova_p,
+
+              ph = full_ph,
+
+              ph_p = full_ph_p,
+
+              coefficients = tidy_model
+            )
+
+          }, error = function(e) {
+
+            list(
+              ok = FALSE,
+              reason = conditionMessage(e)
+            )
+          })
+
+
+          ##################################################
+          ######## Handle failed de-novo fits ##############
+          ##################################################
+
+          if (refit_attempt$ok) {
+
+            full_predictions <-
+              refit_attempt$predictions
+
+            full_concordance <-
+              refit_attempt$concordance
+
+            full_diagnostics <-
+              refit_attempt$diagnostics
+
+            anova_chisq <-
+              refit_attempt$anova_chisq
+
+            anova_df <-
+              refit_attempt$anova_df
+
+            anova_p <-
+              refit_attempt$anova_p
+
+            full_ph_p <-
+              refit_attempt$ph_p
+
+            refit_coef_list[[
+              length(refit_coef_list) + 1L
+            ]] <- refit_attempt$coefficients
+
+
+            if (!is.null(refit_attempt$ph)) {
+
+              ph_table <- refit_attempt$ph$table
+
+              refit_ph_list[[
+                length(refit_ph_list) + 1L
+              ]] <-
+                data.frame(
+                  Seed = seed,
+                  Response = response_col,
+                  Alpha = alpha_val,
+                  nfolds = nfolds_val,
+
+                  Term = rownames(ph_table),
+
+                  Chisq = ph_table[, "chisq"],
+
+                  df = ph_table[, "df"],
+
+                  Pr = ph_table[, "p"],
+
+                  row.names = NULL
+                )
+            }
+
+          } else {
+
+            record_failure(
+              seed,
+              response_col,
+              alpha_val,
+              nfolds_val,
+              "De_novo_Cox",
+              refit_attempt$reason
+            )
+
+            full_predictions <- rep(
+              NA_real_,
+              length(test_times)
+            )
+
+            full_concordance <- list(
+              Cindex = NA_real_,
+              SE = NA_real_,
+              Comparable_pairs = NA_real_
+            )
+
+            full_diagnostics <- setNames(
+              rep(
+                NA_real_,
+                length(baseline_diagnostics)
+              ),
+              names(baseline_diagnostics)
+            )
+
+            anova_chisq <- NA_real_
+
+            anova_df <- NA_real_
+
+            anova_p <- NA_real_
+
+            full_ph_p <- NA_real_
+          }
+
+
+          ##################################################
+          ######## Store refitted performance ##############
+          ##################################################
+
+          refit_results_list[[
+            length(refit_results_list) + 1L
+          ]] <-
+            data.frame(
+              Seed = seed,
+              Response = response_col,
+              Alpha = alpha_val,
+              nfolds = nfolds_val,
+
+              Status = if (refit_attempt$ok) {
+                "ok"
+              } else {
+                "failed"
+              },
+
+              Failure_reason =
+                refit_attempt$reason,
+
+              Baseline_Cindex =
+                baseline_cindex_cox,
+
+              Refit_Cindex =
+                full_concordance$Cindex,
+
+              Delta_Cindex =
+                full_concordance$Cindex -
+                baseline_cindex_cox,
+
+              Baseline_Cindex_SE =
+                baseline_concordance_cox$SE,
+
+              Refit_Cindex_SE =
+                full_concordance$SE,
+
+              ANOVA_chisq = anova_chisq,
+
+              ANOVA_df = anova_df,
+
+              ANOVA_p = anova_p,
+
+              PH_baseline_p = baseline_ph_p,
+
+              PH_global_p = full_ph_p,
+
+              Train_AIC_baseline =
+                unname(
+                  baseline_diagnostics["Train_AIC"]
+                ),
+
+              Train_AIC_full =
+                unname(
+                  full_diagnostics["Train_AIC"]
+                ),
+
+              Train_BIC_baseline =
+                unname(
+                  baseline_diagnostics["Train_BIC"]
+                ),
+
+              Train_BIC_full =
+                unname(
+                  full_diagnostics["Train_BIC"]
+                ),
+
+              Train_logLik_baseline =
+                unname(
+                  baseline_diagnostics["Train_logLik"]
+                ),
+
+              Train_logLik_full =
+                unname(
+                  full_diagnostics["Train_logLik"]
+                ),
+
+              Train_Cindex_baseline =
+                unname(
+                  baseline_diagnostics["Train_Cindex"]
+                ),
+
+              Train_Cindex_full =
+                unname(
+                  full_diagnostics["Train_Cindex"]
+                ),
+
+              Train_LR_p =
+                unname(
+                  full_diagnostics["Train_LR_p"]
+                ),
+
+              Train_Wald_p =
+                unname(
+                  full_diagnostics["Train_Wald_p"]
+                ),
+
+              Train_Score_p =
+                unname(
+                  full_diagnostics["Train_Score_p"]
+                ),
+
+              Events_per_coefficient =
+                unname(
+                  full_diagnostics["Events_per_coefficient"]
+                ),
+
+              # Added biomarkers, excluding mandatory predictors.
+              Number_predictors =
+                length(selected_biomarkers),
+
+              Selected_biomarkers = paste(
+                selected_biomarkers,
+                collapse = "; "
+              ),
+
+              stringsAsFactors = FALSE
+            )
+
+
+          ##################################################
+          ######## Store refitted predictions ##############
+          ##################################################
+
+          refit_prediction_storage[[
+            prediction_key
+          ]] <- list(
+            time = test_times,
+            event = test_events,
+
+            risk = full_predictions,
+
+            baseline_risk =
+              baseline_predictions_cox,
+
+            cindex =
+              full_concordance$Cindex,
+
+            baseline_cindex =
+              baseline_cindex_cox,
+
+            row_id = test_data$row_id,
+
+            status = if (refit_attempt$ok) {
+              "ok"
+            } else {
+              "failed"
+            },
+
+            seed = seed,
+            response = response_col,
+            alpha = alpha_val,
+            nfolds = nfolds_val
+          )
+
+        }, error = function(e) {
+
+          record_failure(
+            seed,
+            response_col,
+            alpha_val,
+            nfolds_val,
+            "Elastic_net",
+            conditionMessage(e)
+          )
+
+          message(
+            "Failed seed ",
+            seed,
+            ", alpha ",
+            alpha_val,
+            ", folds ",
+            nfolds_val,
+            ": ",
+            conditionMessage(e)
+          )
+        })
+
+      } # End alpha loop
+
+    } # End nfolds loop
+
+  } # End seed loop
+
+}, warning = capture_warning)
+
+
+############################################################
+################ Combine all results #######################
+############################################################
+
+results <- bind_rows(results_list)
+
+coefficients_df <- bind_rows(coef_list)
+
+selected_variables <- bind_rows(
+  selected_variables_list
+)
+
+baseline_results <- bind_rows(
+  baseline_results_list
+)
+
+baseline_coefficients <- bind_rows(
+  baseline_coef_list
+)
+
+design_mapping <- bind_rows(
+  design_mapping_list
+)
+
+failed_models_elastic <- bind_rows(
+  failure_list
+)
+
+
+if (nrow(results) == 0) {
+
+  print(failed_models_elastic)
+
+  stop("No elastic-net Cox models were successfully fitted.")
+}
+
+
+############################################################
+############### Variable selection frequency ###############
+############################################################
+
+# Use the complete coefficient table so variables with
+# zero selection frequency are retained when eligible.
+selection_frequency <-
+  coefficients_df %>%
+
+  group_by(
+    Response,
+    Alpha,
+    nfolds,
+    Variable,
+    Original_variable,
+    Mandatory
+  ) %>%
+
+  summarise(
+    Eligible_fits = n_distinct(Seed),
+
+    Selected_splits = sum(Selected),
+
+    Selection_frequency =
+      100 * sum(Selected) / n_seeds,
+
+    .groups = "drop"
+  )
+
+
+############################################################
+############ Combine de novo refitting results #############
+############################################################
+
+refit_results <- bind_rows(
+  refit_results_list
+)
+
+refit_coefficients <- bind_rows(
+  refit_coef_list
+)
+
+refit_ph_results <- bind_rows(
+  refit_ph_list
+)
+
+
+############################################################
+############### De novo summary ############################
+############################################################
+
+refit_summary <- tibble()
+
+refit_coefficients_summary <- tibble()
+
+
+if (nrow(refit_results) > 0) {
+
+  refit_counts <-
+    refit_results %>%
+
+    group_by(
+      Response,
+      Alpha,
+      nfolds
+    ) %>%
+
+    summarise(
+      Attempted_refits = n(),
+
+      Successful_refits = sum(Status == "ok"),
+
+      Failed_refits = sum(Status != "ok"),
+
+      .groups = "drop"
+    )
+
+
+  refit_performance_summary <-
+    refit_results %>%
+
+    filter(Status == "ok") %>%
+
+    group_by(
+      Response,
+      Alpha,
+      nfolds
+    ) %>%
+
+    summarise(
+      Valid_Cindex_splits =
+        sum(is.finite(Refit_Cindex)),
+
+      Mean_Baseline_Cindex =
+        safe_mean(Baseline_Cindex),
+
+      Lower95_Baseline =
+        safe_quantile(Baseline_Cindex, 0.025),
+
+      Upper95_Baseline =
+        safe_quantile(Baseline_Cindex, 0.975),
+
+      Mean_Refit_Cindex =
+        safe_mean(Refit_Cindex),
+
+      Lower95_Refit =
+        safe_quantile(Refit_Cindex, 0.025),
+
+      Upper95_Refit =
+        safe_quantile(Refit_Cindex, 0.975),
+
+      Mean_Delta_Cindex =
+        safe_mean(Delta_Cindex),
+
+      Lower95_Delta =
+        safe_quantile(Delta_Cindex, 0.025),
+
+      Upper95_Delta =
+        safe_quantile(Delta_Cindex, 0.975),
+
+      Median_ANOVA =
+        safe_median(ANOVA_p),
+
+      Significant_ANOVA =
+        100 *
+        sum(
+          ANOVA_p < 0.05,
+          na.rm = TRUE
+        ) / n_seeds,
+
+      Median_PH_global_p =
+        safe_median(PH_global_p),
+
+      PH_tested_splits =
+        sum(is.finite(PH_global_p)),
+
+      PH_significant_frequency =
+        sum(
+          PH_global_p < 0.05,
+          na.rm = TRUE
+        ),
+
+      Mean_Selected =
+        safe_mean(Number_predictors),
+
+      SD_Selected =
+        safe_sd(Number_predictors),
+
+      Mean_Train_AIC_baseline =
+        safe_mean(Train_AIC_baseline),
+
+      Mean_Train_AIC_full =
+        safe_mean(Train_AIC_full),
+
+      Mean_Train_BIC_baseline =
+        safe_mean(Train_BIC_baseline),
+
+      Mean_Train_BIC_full =
+        safe_mean(Train_BIC_full),
+
+      Mean_Events_per_coefficient =
+        safe_mean(Events_per_coefficient),
+
+      .groups = "drop"
+    )
+
+
+  refit_summary <-
+    refit_counts %>%
+
+    left_join(
+      refit_performance_summary,
+
+      by = c(
+        "Response",
+        "Alpha",
+        "nfolds"
+      )
+    ) %>%
+
+    arrange(
+      desc(Mean_Refit_Cindex),
+      desc(Mean_Delta_Cindex)
+    )
+}
+
+
+############################################################
+############### Refit coefficient summary ##################
+############################################################
+
+if (nrow(refit_coefficients) > 0) {
+
+  refit_coefficients_summary <-
+    refit_coefficients %>%
+
+    group_by(
+      Response,
+      Alpha,
+      nfolds,
+      term
+    ) %>%
+
+    summarise(
+      Estimated_splits =
+        n_distinct(Seed),
+
+      Mean_Beta =
+        safe_mean(estimate),
+
+      SD_Beta =
+        safe_sd(estimate),
+
+      Mean_SE =
+        safe_mean(std.error),
+
+      Mean_Wald_z =
+        safe_mean(statistic),
+
+      Mean_HR =
+        safe_mean(HR),
+
+      Lower95_HR =
+        safe_quantile(HR, 0.025),
+
+      Upper95_HR =
+        safe_quantile(HR, 0.975),
+
+      Median_p =
+        safe_median(p.value),
+
+      Mean_FDR =
+        safe_mean(FDR),
+
+      .groups = "drop"
+    )
+}
+
+
+############################################################
+################ Performance summary #######################
+############################################################
+
+summary_results <-
+  results %>%
+
+  group_by(
+    Response,
+    Alpha,
+    nfolds
+  ) %>%
+
+  summarise(
+    Successful_splits =
+      n_distinct(Seed),
+
+    Valid_Cindex_splits =
+      sum(is.finite(ElasticNet_Cindex)),
+
+    Mean_Cindex =
+      safe_mean(ElasticNet_Cindex),
+
+    Lower95_Cindex =
+      safe_quantile(ElasticNet_Cindex, 0.025),
+
+    Upper95_Cindex =
+      safe_quantile(ElasticNet_Cindex, 0.975),
+
+    Mean_Baseline_Cindex =
+      safe_mean(Baseline_Cindex),
+
+    Lower95_Baseline =
+      safe_quantile(Baseline_Cindex, 0.025),
+
+    Upper95_Baseline =
+      safe_quantile(Baseline_Cindex, 0.975),
+
+    Mean_Delta_Cindex =
+      safe_mean(Delta_Cindex),
+
+    Lower95_Delta =
+      safe_quantile(Delta_Cindex, 0.025),
+
+    Upper95_Delta =
+      safe_quantile(Delta_Cindex, 0.975),
+
+    Mean_CV_Cindex =
+      safe_mean(CV_Cindex),
+
+    Mean_Lambda_min =
+      safe_mean(Lambda_min),
+
+    SD_Lambda_min =
+      safe_sd(Lambda_min),
+
+    Mean_Lambda_1se =
+      safe_mean(Lambda_1se),
+
+    SD_Lambda_1se =
+      safe_sd(Lambda_1se),
+
+    # Includes mandatory design columns.
+    Mean_Selected =
+      safe_mean(Selected_predictors),
+
+    SD_Selected =
+      safe_sd(Selected_predictors),
+
+    # Candidate biomarkers only.
+    Mean_Selected_biomarkers =
+      safe_mean(Selected_biomarkers),
+
+    SD_Selected_biomarkers =
+      safe_sd(Selected_biomarkers),
+
+    .groups = "drop"
+  )
+
+
+############################################################
+################ Sort models ###############################
+############################################################
+
+# Descriptive ordering only, not test-based model selection.
+summary_results <-
+  summary_results %>%
+
+  arrange(
+    desc(Mean_Cindex),
+    desc(Mean_Delta_Cindex),
+    Mean_Selected
+  )
+
+
+############################################################
+############ Choose configurations using training CV #######
+############################################################
+
+best_models_cv <-
+  results %>%
+
+  group_by(
+    Response,
+    Seed
+  ) %>%
+
+  arrange(
+    desc(CV_Cindex),
+    Alpha,
+    nfolds,
+    .by_group = TRUE
+  ) %>%
+
+  slice_head(n = 1) %>%
+
+  ungroup()
+
+
+############################################################
+################ Save detailed results #####################
+############################################################
+
+dir.create(
+  "Machine Learning Models comparison and summary",
+  showWarnings = FALSE
+)
+
+write_xlsx(
+  results,
+  "Machine Learning Models comparison and summary/ElasticNet_AllSeeds.xlsx"
+)
+
+write_xlsx(
+  coefficients_df,
+  "Machine Learning Models comparison and summary/ElasticNet_Coefficients_AllSeeds.xlsx"
+)
+
+write_xlsx(
+  selection_frequency,
+  "Machine Learning Models comparison and summary/Selection_Frequency.xlsx"
+)
+
+write_xlsx(
+  best_models_cv,
+  "Machine Learning Models comparison and summary/CV_Chosen_Models.xlsx"
+)
+
+write_xlsx(
+  baseline_results,
+  "Machine Learning Models comparison and summary/Ridge_Baseline_Results.xlsx"
+)
+
+write_xlsx(
+  baseline_coefficients,
+  "Machine Learning Models comparison and summary/Ridge_Baseline_Coefficients.xlsx"
+)
+
+if (nrow(refit_results) > 0) {
+  write_xlsx(
+    refit_results,
+    "Machine Learning Models comparison and summary/Refit_AllSeeds.xlsx"
+  )
+}
+
+if (nrow(refit_coefficients) > 0) {
+  write_xlsx(
+    refit_coefficients,
+    "Machine Learning Models comparison and summary/Refit_Coefficients_AllSeeds.xlsx"
+  )
+}
+
+if (nrow(refit_ph_results) > 0) {
+  write_xlsx(
+    refit_ph_results,
+    "Machine Learning Models comparison and summary/Refit_PH_Tests.xlsx"
+  )
+}
+
+if (nrow(failed_models_elastic) > 0) {
+  write_xlsx(
+    failed_models_elastic,
+    "Machine Learning Models comparison and summary/Failed_Models.xlsx"
+  )
+}
+
+saveRDS(
+  cv_fold_storage,
+  "Machine Learning Models comparison and summary/Shared_CV_Folds.rds"
+)
+
+saveRDS(
+  list(
+    elastic = elastic_prediction_storage,
+    refit = refit_prediction_storage
+  ),
+  "Machine Learning Models comparison and summary/Cox_Test_Predictions.rds"
+)
+
+
+############################################################
+################ Display warnings ##########################
+############################################################
+
+warnings <- unique(warnings)
+
+if (length(warnings) > 0) {
+
+  cat(
+    '<details><summary style="font-size:1.2em;"><strong>',
+    length(warnings),
+    ' unique warning(s) encountered during the analysis',
+    '</strong></summary>'
+  )
+
+  cat('<div style="margin-left:20px;margin-top:10px;">')
+
+  for (warn in warnings) {
+
+    cat(
+      "<p>",
+      escape_html(warn),
+      "</p>"
+    )
+  }
+
+  cat("</div></details><br>")
+
+} else {
+
+  cat(
+    "No warnings were encountered during the analysis.<br>"
+  )
+}
+
+
+if (nrow(failed_models_elastic) > 0) {
+
+  cat(
+    '<details><summary><strong>',
+    nrow(failed_models_elastic),
+    ' failed fits</strong></summary>'
+  )
+
+  print(
+    kable(
+      failed_models_elastic,
+      format = "html",
+      row.names = FALSE,
+      escape = TRUE
+    )
+  )
+
+  cat("</details><br>")
+}
+```
+
+## Obtaining the optimal lambda and C-index of each Cox model under different alpha values in elastic net
+
+The machine-learning comparison uses the mandatory-only Ridge Cox baseline. The de-novo comparison uses the mandatory-only ordinary Cox baseline.
+
+Ranges in parentheses are the 2.5th–97.5th percentiles across splits, not confidence intervals. Within-fit hazard-ratio confidence intervals are available in the detailed coefficient exports.
+
+```{r cox-elastic-summary-tables, results='asis'}
+############################################################
+################ Elastic Net summary tables ################
+############################################################
+
+library(knitr)
+library(kableExtra)
+library(writexl)
+library(dplyr)
+
+output_directory <-
+  "Machine Learning Models comparison and summary"
+
+dir.create(
+  output_directory,
+  showWarnings = FALSE
+)
+
+
+############################################################
+################ Display helpers ###########################
+############################################################
+
+format_range <- function(center, lower, upper) {
+
+  ifelse(
+    is.finite(center) &
+      is.finite(lower) &
+      is.finite(upper),
+
+    sprintf(
+      "%.3f (%.3f–%.3f)",
+      center,
+      lower,
+      upper
+    ),
+
+    "—"
+  )
+}
+
+
+format_mean_sd <- function(center, spread, digits = 3) {
+
+  pattern <- paste0(
+    "%.",
+    digits,
+    "f ± %.",
+    digits,
+    "f"
+  )
+
+  ifelse(
+    is.finite(center) &
+      is.finite(spread),
+
+    sprintf(
+      pattern,
+      center,
+      spread
+    ),
+
+    "—"
+  )
+}
+
+
+print_cox_table <- function(table, caption) {
+
+  kable(
+    table,
+    format = "html",
+    digits = 3,
+    caption = caption,
+    align = "c",
+    escape = TRUE
+  ) %>%
+
+    kable_styling(
+      bootstrap_options = c(
+        "striped",
+        "hover",
+        "condensed",
+        "responsive"
+      ),
+
+      full_width = FALSE,
+
+      position = "center"
+    ) %>%
+
+    row_spec(
+      0,
+      bold = TRUE,
+      color = "white",
+      background = "black"
+    ) %>%
+
+    print()
+}
+
+
+############################################################
+################ Loop over responses #######################
+############################################################
+
+response_names <- unique(
+  summary_results$Response
+)
+
+for (response_index in seq_along(response_names)) {
+
+  response_col <- response_names[response_index]
+
+  safe_response <- paste0(
+    "Response_",
+    response_index,
+    "_",
+    gsub(
+      "[^[:alnum:]_-]",
+      "_",
+      response_col
+    )
+  )
+
+
+  ##########################################################
+  ################ Response collapsible ####################
+  ##########################################################
+
+  cat(
+    paste0(
+      '<details><summary style="font-size:1.4em;"><strong>',
+      'Cox Elastic Net Results for Response: ',
+      escape_html(response_col),
+      '</strong></summary>',
+      '<div style="margin-left:20px;margin-top:10px;">'
+    )
+  )
+
+
+  ##########################################################
+  ################ Loop over nfolds ########################
+  ##########################################################
+
+  response_folds <-
+    summary_results %>%
+
+    filter(
+      Response == response_col
+    ) %>%
+
+    pull(nfolds) %>%
+
+    unique() %>%
+
+    sort()
+
+
+  for (nfolds_val in response_folds) {
+
+    cat(
+      paste0(
+        '<details><summary style="font-size:1.2em;"><strong>',
+        'Results for nfolds = ',
+        nfolds_val,
+        '</strong></summary>',
+        '<div style="margin-left:20px;margin-top:10px;">'
+      )
+    )
+
+
+    ########################################################
+    ################ Summary table #########################
+    ########################################################
+
+    response_summary <-
+      summary_results %>%
+
+      filter(
+        Response == response_col,
+        nfolds == nfolds_val
+      )
+
+
+    summary_file <- file.path(
+      output_directory,
+
+      paste0(
+        safe_response,
+        "_nfolds_",
+        nfolds_val,
+        "_ElasticNet_summary.xlsx"
+      )
+    )
+
+    write_xlsx(
+      response_summary,
+      summary_file
+    )
+
+
+    cat(
+      paste0(
+        '<a href="',
+        escape_html(summary_file),
+        '" download>',
+        'Download Elastic Net summary as Excel',
+        '</a><br><br>'
+      )
+    )
+
+
+    ########################################################
+    ########### HTML version of summary table ##############
+    ########################################################
+
+    response_summary_html <-
+      response_summary %>%
+
+      mutate(
+        Cindex = format_range(
+          Mean_Cindex,
+          Lower95_Cindex,
+          Upper95_Cindex
+        ),
+
+        Baseline_Cindex = format_range(
+          Mean_Baseline_Cindex,
+          Lower95_Baseline,
+          Upper95_Baseline
+        ),
+
+        Delta_Cindex = format_range(
+          Mean_Delta_Cindex,
+          Lower95_Delta,
+          Upper95_Delta
+        ),
+
+        Lambda_min = format_mean_sd(
+          Mean_Lambda_min,
+          SD_Lambda_min
+        ),
+
+        Lambda_1se = format_mean_sd(
+          Mean_Lambda_1se,
+          SD_Lambda_1se
+        ),
+
+        Selected_predictors = format_mean_sd(
+          Mean_Selected,
+          SD_Selected,
+          digits = 2
+        ),
+
+        Selected_biomarkers = format_mean_sd(
+          Mean_Selected_biomarkers,
+          SD_Selected_biomarkers,
+          digits = 2
+        )
+      ) %>%
+
+      select(
+        Response,
+        Alpha,
+        nfolds,
+
+        Successful_splits,
+
+        Cindex,
+        Baseline_Cindex,
+        Delta_Cindex,
+
+        Mean_CV_Cindex,
+
+        Lambda_min,
+        Lambda_1se,
+
+        Selected_predictors,
+        Selected_biomarkers
+      )
+
+
+    print_cox_table(
+      response_summary_html,
+
+      caption = paste(
+        "Cox Elastic Net performance summary for",
+        response_col,
+        "(nfolds =",
+        nfolds_val,
+        ")"
+      )
+    )
+
+
+    cat(
+      paste0(
+        "<p><small>",
+        "Selected_predictors includes mandatory design columns ",
+        "and selected biomarker columns. ",
+        "Selected_biomarkers excludes mandatory predictors. ",
+        "All reported models use λmin.",
+        "</small></p>"
+      )
+    )
+
+
+    ########################################################
+    ################ De novo summary #######################
+    ########################################################
+
+    if (nrow(refit_summary) > 0) {
+
+      refit_table <-
+        refit_summary %>%
+
+        filter(
+          Response == response_col,
+          nfolds == nfolds_val
+        )
+
+    } else {
+
+      refit_table <- tibble()
+    }
+
+
+    if (nrow(refit_table) == 0) {
+
+      cat(
+        "<p>No de-novo Cox results are available for this setting.</p>"
+      )
+
+    } else {
+
+      refit_file <- file.path(
+        output_directory,
+
+        paste0(
+          safe_response,
+          "_nfolds_",
+          nfolds_val,
+          "_Refitted_model_summary.xlsx"
+        )
+      )
+
+      write_xlsx(
+        refit_table,
+        refit_file
+      )
+
+      cat(
+        paste0(
+          '<br><a href="',
+          escape_html(refit_file),
+          '" download>',
+          'Download Refitted Cox Model Summary as Excel',
+          '</a><br><br>'
+        )
+      )
+
+
+      refit_table_html <-
+        refit_table %>%
+
+        mutate(
+          Baseline_Cindex = format_range(
+            Mean_Baseline_Cindex,
+            Lower95_Baseline,
+            Upper95_Baseline
+          ),
+
+          Refit_Cindex = format_range(
+            Mean_Refit_Cindex,
+            Lower95_Refit,
+            Upper95_Refit
+          ),
+
+          Delta_Cindex = format_range(
+            Mean_Delta_Cindex,
+            Lower95_Delta,
+            Upper95_Delta
+          ),
+
+          Significant_ANOVA = ifelse(
+            is.finite(Significant_ANOVA),
+
+            sprintf(
+              "%.1f%%",
+              Significant_ANOVA
+            ),
+
+            "—"
+          ),
+
+          Selected_biomarkers = format_mean_sd(
+            Mean_Selected,
+            SD_Selected,
+            digits = 2
+          )
+        ) %>%
+
+        select(
+          Response,
+          Alpha,
+          nfolds,
+
+          Attempted_refits,
+          Successful_refits,
+          Failed_refits,
+
+          Baseline_Cindex,
+          Refit_Cindex,
+          Delta_Cindex,
+
+          Median_ANOVA,
+          Significant_ANOVA,
+
+          Median_PH_global_p,
+
+          Selected_biomarkers
+        )
+
+
+      print_cox_table(
+        refit_table_html,
+
+        caption = paste(
+          "Refitted Cox performance summary for",
+          response_col,
+          "(nfolds =",
+          nfolds_val,
+          ")"
+        )
+      )
+
+
+      cat(
+        paste0(
+          "<p><small>",
+          "Performance summaries use successful refits only. ",
+          "Significant ANOVA is the percentage of all ",
+          n_seeds,
+          " requested splits with likelihood-ratio p &lt; 0.05. ",
+          "Training AIC/BIC and event-to-coefficient information ",
+          "are included in the Excel export.",
+          "</small></p>"
+        )
+      )
+    }
+
+
+    ########################################################
+    ############ Refitted coefficient summary ##############
+    ########################################################
+
+    if (nrow(refit_coefficients_summary) > 0) {
+
+      coef_summary_raw <-
+        refit_coefficients_summary %>%
+
+        filter(
+          Response == response_col,
+          nfolds == nfolds_val
+        )
+
+    } else {
+
+      coef_summary_raw <- tibble()
+    }
+
+
+    if (nrow(coef_summary_raw) == 0) {
+
+      cat(
+        "<p>No estimable refitted coefficient summaries are available.</p>"
+      )
+
+    } else {
+
+      coef_summary_numeric <-
+        coef_summary_raw %>%
+
+        left_join(
+          selection_frequency %>%
+
+            rename(
+              term = Variable
+            ) %>%
+
+            select(
+              Response,
+              Alpha,
+              nfolds,
+              term,
+              Selection_frequency
+            ),
+
+          by = c(
+            "Response",
+            "Alpha",
+            "nfolds",
+            "term"
+          )
+        )
+
+
+      coef_summary <-
+        coef_summary_numeric %>%
+
+        mutate(
+          Beta = format_mean_sd(
+            Mean_Beta,
+            SD_Beta
+          ),
+
+          HR_display = format_range(
+            Mean_HR,
+            Lower95_HR,
+            Upper95_HR
+          )
+        ) %>%
+
+        rename(
+          Predictor = term,
+
+          `Selection (%)` = Selection_frequency,
+
+          `Estimated splits` = Estimated_splits,
+
+          `β ± SD` = Beta,
+
+          `Hazard Ratio` = HR_display,
+
+          `Mean SE` = Mean_SE,
+
+          `Mean Wald z` = Mean_Wald_z,
+
+          `Median p` = Median_p,
+
+          `Mean FDR` = Mean_FDR
+        ) %>%
+
+        select(
+          Response,
+          Alpha,
+          nfolds,
+          Predictor,
+
+          `Selection (%)`,
+          `Estimated splits`,
+
+          `β ± SD`,
+          `Hazard Ratio`,
+
+          `Mean SE`,
+          `Mean Wald z`,
+
+          `Median p`,
+          `Mean FDR`
+        ) %>%
+
+        arrange(
+          Alpha,
+          desc(`Selection (%)`),
+          Predictor
+        )
+
+
+      coef_file <- file.path(
+        output_directory,
+
+        paste0(
+          safe_response,
+          "_nfolds_",
+          nfolds_val,
+          "_Refitted_coefficients_summary.xlsx"
+        )
+      )
+
+
+      write_xlsx(
+        list(
+          Numeric_summary = coef_summary_numeric,
+          Display_summary = coef_summary
+        ),
+
+        path = coef_file
+      )
+
+
+      cat(
+        paste0(
+          '<br><a href="',
+          escape_html(coef_file),
+          '" download>',
+          'Download Refitted Cox Coefficient Summary as Excel',
+          '</a><br><br>'
+        )
+      )
+
+
+      coef_summary_html <-
+        coef_summary %>%
+
+        mutate(
+          `Median p` = format.pval(
+            `Median p`,
+            digits = 3,
+            eps = 0.001
+          ),
+
+          `Mean FDR` = format.pval(
+            `Mean FDR`,
+            digits = 3,
+            eps = 0.001
+          )
+        )
+
+
+      print_cox_table(
+        coef_summary_html,
+
+        caption = paste(
+          "Refitted Cox coefficient summary for",
+          response_col,
+          "(nfolds =",
+          nfolds_val,
+          ")"
+        )
+      )
+
+
+      cat(
+        paste0(
+          "<p><small>",
+          "Hazard Ratio shows the mean HR and its empirical ",
+          "2.5th–97.5th percentile range across estimable refits. ",
+          "It is not a pooled confidence interval. ",
+          "Selection percentages use all ",
+          n_seeds,
+          " requested splits. ",
+          "Refit p-values and FDR remain exploratory after ",
+          "biomarker selection. ",
+          "Mean FDR and median p-values are descriptive summaries.",
+          "</small></p>"
+        )
+      )
+    }
+
+
+    ########################################################
+    ################ Close nfolds panel ####################
+    ########################################################
+
+    cat("</div></details><br>")
+  }
+
+
+  ##########################################################
+  ################ Close response panel ####################
+  ##########################################################
+
+  cat("</div></details><br>")
+}
+```
+
+
+
+## Obtaining the coefficients selected by Elastic Net and displaying the de-novo Cox refits
+
+The preceding section fitted an ordinary Cox proportional hazards model using the mandatory predictors plus biomarkers with nonzero Elastic Net coefficients. Each de-novo Cox model was compared with its mandatory-predictor-only Cox baseline using a partial-likelihood ratio test.
+
+These refitted models differ from the penalized Cox models: their coefficients are estimated using ordinary Cox regression rather than Elastic Net. If no candidate biomarkers were selected, the refitted model equals the baseline model, their test C-indices are identical, and the nested-model comparison p-value is undefined.
+
+The first table shows the penalized Cox coefficients for selected biomarkers and all mandatory predictors. Mandatory predictors remain displayed even if their estimated coefficients equal zero.
+
+The second table shows the corresponding de-novo Cox coefficients, hazard ratios, confidence intervals, standard errors, Wald z statistics, p-values, and FDR-adjusted p-values. This inference is exploratory because biomarker selection and refitting used the same training observations.
+
+For each alpha/fold configuration, the two successful splits whose refitted test C-indices are closest to the mean are displayed. They are descriptive illustrations, not independently selected final models.
+
+```{r representative-cox-models, results='asis', fig.width=10, fig.height=6}
+############################################################
+############ Representative Elastic Net models #############
+############################################################
+
+library(dplyr)
+library(knitr)
+library(kableExtra)
+library(writexl)
+library(ggplot2)
+
+representative_directory <- "Representative Elastic Net Models"
+
+dir.create(
+  representative_directory,
+  showWarnings = FALSE
+)
+
+
+############################################################
+################ Display helpers ###########################
+############################################################
+
+escape_html <- function(x) {
+  as.character(
+    htmltools::htmlEscape(as.character(x))
+  )
+}
+
+
+print_representative_table <- function(table, caption) {
+
+  kable(
+    table,
+
+    format = "html",
+
+    digits = 3,
+
+    caption = caption,
+
+    align = "c",
+
+    escape = TRUE
+  ) %>%
+
+    kable_styling(
+      bootstrap_options = c(
+        "striped",
+        "hover",
+        "condensed",
+        "responsive"
+      ),
+
+      full_width = FALSE,
+
+      position = "center"
+    ) %>%
+
+    row_spec(
+      0,
+      bold = TRUE,
+      color = "white",
+      background = "black"
+    ) %>%
+
+    print()
+}
+
+
+plot_cox_cv <- function(cvfit) {
+
+  old_par <- par(no.readonly = TRUE)
+
+  on.exit(
+    par(old_par),
+    add = TRUE
+  )
+
+  par(
+    mar = c(5, 5, 5.5, 2),
+    oma = c(0, 0, 0, 0)
+  )
+
+  plot(cvfit)
+
+  title(
+    main = "Cox Elastic Net Cross-validation",
+    cex.main = 1.0
+  )
+}
+
+
+############################################################
+############ Identify representative models ################
+############################################################
+
+representative_models <- tibble()
+
+if (nrow(refit_results) > 0) {
+
+  representative_models <-
+    refit_results %>%
+
+    filter(
+      Status == "ok",
+      is.finite(Refit_Cindex)
+    ) %>%
+
+    group_by(
+      Response,
+      Alpha,
+      nfolds
+    ) %>%
+
+    mutate(
+      Mean_Refit_Cindex = mean(
+        Refit_Cindex
+      ),
+
+      Distance = abs(
+        Refit_Cindex - Mean_Refit_Cindex
+      )
+    ) %>%
+
+    arrange(
+      Distance,
+      Seed,
+      .by_group = TRUE
+    ) %>%
+
+    slice_head(n = 2) %>%
+
+    ungroup()
+}
+
+
+if (nrow(representative_models) == 0) {
+
+  cat(
+    paste0(
+      "<p>No successful refitted Cox models with finite ",
+      "test C-index are available for representative display.</p>"
+    )
+  )
+
+} else {
+
+  write_xlsx(
+    representative_models,
+
+    file.path(
+      representative_directory,
+      "Representative_Cox_Model_Selection.xlsx"
+    )
+  )
+}
+
+
+############################################################
+################ Loop over responses #######################
+############################################################
+
+representative_responses <- if (
+  nrow(representative_models) > 0
+) {
+  unique(representative_models$Response)
+} else {
+  character(0)
+}
+
+
+for (response_index in seq_along(representative_responses)) {
+
+  response_col <- representative_responses[response_index]
+
+  safe_response <- paste0(
+    "Response_",
+    response_index,
+    "_",
+    gsub(
+      "[^[:alnum:]_-]",
+      "_",
+      response_col
+    )
+  )
+
+
+  cat(
+    paste0(
+      '<details><summary style="font-size:1.4em;"><strong>',
+      'Representative Cox models for Response: ',
+      escape_html(response_col),
+      '</strong></summary>',
+      '<div style="margin-left:20px;margin-top:10px;">'
+    )
+  )
+
+
+  ##########################################################
+  ################ Loop over nfolds ########################
+  ##########################################################
+
+  response_folds <-
+    representative_models %>%
+
+    filter(
+      Response == response_col
+    ) %>%
+
+    pull(nfolds) %>%
+
+    unique() %>%
+
+    sort()
+
+
+  for (nfolds_val in response_folds) {
+
+    cat(
+      paste0(
+        '<details><summary style="font-size:1.2em;"><strong>',
+        'nfolds = ',
+        nfolds_val,
+        '</strong></summary>',
+        '<div style="margin-left:20px;margin-top:10px;">'
+      )
+    )
+
+
+    ########################################################
+    ################ Loop over alpha #######################
+    ########################################################
+
+    response_alphas <-
+      representative_models %>%
+
+      filter(
+        Response == response_col,
+        nfolds == nfolds_val
+      ) %>%
+
+      pull(Alpha) %>%
+
+      unique() %>%
+
+      sort()
+
+
+    for (alpha_val in response_alphas) {
+
+      cat(
+        paste0(
+          '<details><summary><strong>Alpha = ',
+          alpha_val,
+          '</strong></summary><br>'
+        )
+      )
+
+
+      rep_models <-
+        representative_models %>%
+
+        filter(
+          Response == response_col,
+          nfolds == nfolds_val,
+          Alpha == alpha_val
+        )
+
+
+      if (nrow(rep_models) == 0) {
+
+        cat(
+          "No representative models found.<br><br>"
+        )
+
+      } else {
+
+
+        ####################################################
+        ######## Loop over representative seeds ############
+        ####################################################
+
+        for (i in seq_len(nrow(rep_models))) {
+
+          this_seed <- rep_models$Seed[i]
+
+
+          cat(
+            paste0(
+              "<h4>Representative model ",
+              i,
+              " (Seed ",
+              this_seed,
+              ")</h4>"
+            )
+          )
+
+
+          cat(
+            paste0(
+
+              "<b>Baseline Cox test C-index:</b> ",
+              round(
+                rep_models$Baseline_Cindex[i],
+                3
+              ),
+              "<br>",
+
+
+              "<b>Refitted Cox test C-index:</b> ",
+              round(
+                rep_models$Refit_Cindex[i],
+                3
+              ),
+              "<br>",
+
+
+              "<b>Mean refitted test C-index:</b> ",
+              round(
+                rep_models$Mean_Refit_Cindex[i],
+                3
+              ),
+              "<br>",
+
+
+              "<b>Distance from mean:</b> ",
+              round(
+                rep_models$Distance[i],
+                5
+              ),
+              "<br>",
+
+
+              "<b>ΔC-index:</b> ",
+              round(
+                rep_models$Delta_Cindex[i],
+                3
+              ),
+              "<br><br>",
+
+
+              "<b>Likelihood-ratio ANOVA p-value:</b> ",
+              format.pval(
+                rep_models$ANOVA_p[i],
+                digits = 3,
+                eps = 0.001
+              ),
+              "<br>",
+
+
+              "<b>Global proportional-hazards test p-value:</b> ",
+              format.pval(
+                rep_models$PH_global_p[i],
+                digits = 3,
+                eps = 0.001
+              ),
+              "<br>",
+
+
+              "<b>Number of selected biomarkers:</b> ",
+              rep_models$Number_predictors[i],
+              "<br>",
+
+
+              "<b>Selected biomarkers:</b> ",
+              if (
+                is.na(rep_models$Selected_biomarkers[i]) ||
+                !nzchar(rep_models$Selected_biomarkers[i])
+              ) {
+
+                "None; the refitted model equals the baseline model"
+
+              } else {
+
+                escape_html(
+                  rep_models$Selected_biomarkers[i]
+                )
+              },
+              "<br><br>"
+
+            )
+          )
+
+
+          ##################################################
+          ############ Cross-validation plot ###############
+          ##################################################
+
+          cv_key <- paste(
+            response_col,
+            alpha_val,
+            nfolds_val,
+            this_seed,
+            sep = "_"
+          )
+
+          cvfit <- cv_models[[cv_key]]
+
+
+          if (!is.null(cvfit)) {
+
+            cat(
+              paste0(
+                "<b>λmin:</b> ",
+                signif(
+                  cvfit$lambda.min,
+                  5
+                ),
+                "<br>",
+
+                "<b>λ1se:</b> ",
+                signif(
+                  cvfit$lambda.1se,
+                  5
+                ),
+                "<br><br>\n\n"
+              )
+            )
+
+
+            plot_cox_cv(cvfit)
+
+
+            cat(
+              paste0(
+                "\n\n<p><small>",
+                "This plot shows internal training cross-validation ",
+                "C-index. Higher values indicate better discrimination. ",
+                "The fitted Elastic Net model uses λmin.",
+                "</small></p>\n\n"
+              )
+            )
+
+          } else {
+
+            cat(
+              "<b>Cross-validation plot not available.</b><br><br>"
+            )
+          }
+
+
+          ##################################################
+          ######## Refitted C-index plot across splits ######
+          ##################################################
+
+          # C-index has no ordinary ROC curve.
+          # Plot paired baseline/refit test C-indices across splits,
+          # highlighting the representative split.
+
+          plot_data <-
+            refit_results %>%
+
+            filter(
+              Response == response_col,
+              Alpha == alpha_val,
+              nfolds == nfolds_val,
+              Status == "ok",
+              is.finite(Baseline_Cindex),
+              is.finite(Refit_Cindex)
+            )
+
+
+          if (nrow(plot_data) > 0) {
+
+            refit_cindex_plot <-
+              ggplot(
+                plot_data,
+                aes(x = Seed)
+              ) +
+
+              geom_segment(
+                aes(
+                  xend = Seed,
+                  y = Baseline_Cindex,
+                  yend = Refit_Cindex
+                ),
+
+                color = "grey75",
+                linewidth = 0.5
+              ) +
+
+              geom_point(
+                aes(
+                  y = Baseline_Cindex,
+                  color = "Baseline Cox"
+                ),
+
+                shape = 1,
+                size = 2.5
+              ) +
+
+              geom_point(
+                aes(
+                  y = Refit_Cindex,
+                  color = "Refitted Cox"
+                ),
+
+                size = 2.5
+              ) +
+
+              geom_point(
+                data = plot_data %>%
+                  filter(Seed == this_seed),
+
+                aes(y = Refit_Cindex),
+
+                shape = 21,
+                fill = "#B2182B",
+                color = "black",
+                size = 4,
+                stroke = 0.7
+              ) +
+
+              geom_hline(
+                yintercept =
+                  rep_models$Mean_Refit_Cindex[i],
+
+                linetype = "dashed",
+                color = "#2166AC"
+              ) +
+
+              scale_color_manual(
+                values = c(
+                  "Baseline Cox" = "grey40",
+                  "Refitted Cox" = "#2166AC"
+                )
+              ) +
+
+              coord_cartesian(
+                ylim = c(0, 1)
+              ) +
+
+              theme_minimal(
+                base_size = 12
+              ) +
+
+              labs(
+                title =
+                  "Independent test C-index across splits",
+
+                subtitle = paste0(
+                  "Alpha = ",
+                  alpha_val,
+                  " | Folds = ",
+                  nfolds_val,
+                  " | Representative seed = ",
+                  this_seed
+                ),
+
+                x = "Split seed",
+
+                y = "Test C-index",
+
+                color = "Model",
+
+                caption = paste(
+                  "Red point: representative refit.",
+                  "Dashed line: mean refitted C-index."
+                )
+              )
+
+
+            print(refit_cindex_plot)
+
+            cat("\n\n")
+
+          } else {
+
+            cat(
+              "<p>No finite C-index values are available for plotting.</p>"
+            )
+          }
+
+
+          ##################################################
+          ######## Elastic Net coefficient table ###########
+          ##################################################
+
+          elastic_table <-
+            coefficients_df %>%
+
+            filter(
+              Seed == this_seed,
+              Response == response_col,
+              Alpha == alpha_val,
+              nfolds == nfolds_val,
+
+              # Preserve every mandatory predictor,
+              # including any estimated coefficient equal to zero.
+              Mandatory | Nonzero
+            ) %>%
+
+            mutate(
+              Penalized_HR = exp(Coefficient)
+            )
+
+
+          elastic_file <- file.path(
+            representative_directory,
+
+            paste0(
+              safe_response,
+              "_nfolds_",
+              nfolds_val,
+              "_alpha_",
+              alpha_val,
+              "_seed_",
+              this_seed,
+              "_ElasticNet.xlsx"
+            )
+          )
+
+
+          write_xlsx(
+            elastic_table,
+            elastic_file
+          )
+
+
+          cat(
+            paste0(
+              '<a href="',
+              escape_html(elastic_file),
+              '" download>',
+              'Download Elastic Net coefficients (Seed ',
+              this_seed,
+              ')</a><br><br>'
+            )
+          )
+
+
+          elastic_table_html <-
+            elastic_table %>%
+
+            select(
+              Variable,
+              Original_variable,
+              Coefficient,
+              Penalized_HR,
+              Mandatory,
+              Nonzero
+            )
+
+
+          print_representative_table(
+            elastic_table_html,
+
+            caption = paste(
+              "Penalized Cox Elastic Net coefficients",
+              "(Seed",
+              this_seed,
+              ")"
+            )
+          )
+
+
+          cat(
+            paste0(
+              "<p><small>",
+              "Penalized_HR = exp(Coefficient). ",
+              "These are penalized estimates; conventional ",
+              "coefficient p-values and confidence intervals ",
+              "are not supplied for this Elastic Net table. ",
+              "A Cox model has no intercept coefficient.",
+              "</small></p>"
+            )
+          )
+
+
+          ##################################################
+          ######## Refitted Cox coefficient table ##########
+          ##################################################
+
+          refit_table <-
+            refit_coefficients %>%
+
+            filter(
+              Seed == this_seed,
+              Response == response_col,
+              Alpha == alpha_val,
+              nfolds == nfolds_val
+            )
+
+
+          refit_file <- file.path(
+            representative_directory,
+
+            paste0(
+              safe_response,
+              "_nfolds_",
+              nfolds_val,
+              "_alpha_",
+              alpha_val,
+              "_seed_",
+              this_seed,
+              "_Refitted.xlsx"
+            )
+          )
+
+
+          if (nrow(refit_table) > 0) {
+
+            # Preserve full numeric values in the Excel export.
+            export_tables <- list(
+              Coefficients = refit_table,
+
+              Performance = as.data.frame(
+                rep_models[i, , drop = FALSE]
+              )
+            )
+
+
+            # Include term-specific and global PH diagnostics
+            # when they were successfully calculated.
+            if (
+              exists("refit_ph_results") &&
+              nrow(refit_ph_results) > 0
+            ) {
+
+              model_ph <-
+                refit_ph_results %>%
+
+                filter(
+                  Seed == this_seed,
+                  Response == response_col,
+                  Alpha == alpha_val,
+                  nfolds == nfolds_val
+                )
+
+              if (nrow(model_ph) > 0) {
+                export_tables$PH_tests <- model_ph
+              }
+            }
+
+
+            write_xlsx(
+              export_tables,
+              path = refit_file
+            )
+
+
+            cat(
+              paste0(
+                '<a href="',
+                escape_html(refit_file),
+                '" download>',
+                'Download Refitted Cox Model Results (Seed ',
+                this_seed,
+                ')</a><br><br>'
+              )
+            )
+
+
+            refit_table_html <-
+              refit_table %>%
+
+              transmute(
+                Predictor = term,
+
+                Beta = estimate,
+
+                SE = std.error,
+
+                `Wald z` = statistic,
+
+                HR = HR,
+
+                `HR lower 95% CI` = HR_lower95,
+
+                `HR upper 95% CI` = HR_upper95,
+
+                `p-value` = ifelse(
+                  is.finite(p.value),
+
+                  format.pval(
+                    p.value,
+                    digits = 3,
+                    eps = 0.001
+                  ),
+
+                  "—"
+                ),
+
+                FDR = ifelse(
+                  is.finite(FDR),
+
+                  format.pval(
+                    FDR,
+                    digits = 3,
+                    eps = 0.001
+                  ),
+
+                  "—"
+                )
+              )
+
+
+            print_representative_table(
+              refit_table_html,
+
+              caption = paste(
+                "Refitted Cox regression coefficients",
+                "(Seed",
+                this_seed,
+                ")"
+              )
+            )
+
+
+            cat(
+              paste0(
+                "<p><small>",
+                "HR confidence intervals are the ordinary Wald ",
+                "intervals from this training-set Cox fit. ",
+                "They do not account for the preceding biomarker ",
+                "selection or the selection of a representative split. ",
+                "P-values and within-model FDR are therefore exploratory. ",
+                "A nonsignificant PH test does not establish that ",
+                "the proportional-hazards assumption holds.",
+                "</small></p>"
+              )
+            )
+
+          } else {
+
+            cat(
+              "<p>No refitted coefficient table is available.</p>"
+            )
+          }
+
+
+          cat("<hr>")
+        }
+      }
+
+
+      cat("</details><br>")
+    }
+
+
+    cat("</div></details><br>")
+  }
+
+
+  cat("</div></details><br>")
+}
+
+
+```
+
+
+
+
+
+
+
+
+
