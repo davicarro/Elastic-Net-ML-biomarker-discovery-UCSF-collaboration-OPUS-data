@@ -1,6 +1,3 @@
-# Elastic-Net-ML-biomarker-discovery-UCSF-collaboration-OPUS-data
-R-based machine learning framework integrating Elastic Net regularization with logistic, Cox proportional hazards, and linear regression to identify circulating microRNA biomarkers associated with fracture risk, time-to-fracture, and bone mineral density in the OPUS cohort.
-
 # 🧬 Elastic Net Machine Learning for Circulating Biomarker Discovery in Osteoporosis
 
 ### 🤖 Logistic Regression | Cox Proportional Hazards | Multiple Linear Regression | OPUS Cohort
@@ -8,7 +5,7 @@ R-based machine learning framework integrating Elastic Net regularization with l
 **Author:** David Carro Vázquez, PhD  
 **Research affiliation:** Department of Orthopedic Surgery, University of California, San Francisco (UCSF)  
 **Programming language:** R / R Markdown  
-**Research areas:** Machine Learning | Osteoporosis | Biomarker Discovery | microRNA | Bone Turnover Markers | Fracture Risk Prediction | Survival Analysis | Biostatistics
+**Research areas:** Machine Learning | Osteoporosis | Biomarker Discovery | microRNA | Bone Turnover Markers | Fracture Prediction | Survival Analysis | Biostatistics
 
 ---
 
@@ -16,19 +13,19 @@ R-based machine learning framework integrating Elastic Net regularization with l
 
 This repository documents an R-based computational framework developed to investigate the predictive value of circulating molecular biomarkers for osteoporotic fractures, bone mineral density (BMD), longitudinal bone loss, and related musculoskeletal outcomes.
 
-The analyses are based on the **Osteoporosis and Ultrasound Study (OPUS)** cohort and integrate clinical predictors with circulating microRNAs (miRNAs) and bone turnover markers (BTMs).
+The analyses are based on the **Osteoporosis and Ultrasound Study (OPUS)** cohort and integrate established clinical predictors with circulating microRNAs (miRNAs) and bone turnover markers (BTMs).
 
-The computational framework combines conventional regression methods with **Elastic Net regularization**, enabling biomarker selection from correlated molecular predictors and evaluation of their incremental predictive contribution beyond established clinical variables.
+The computational framework combines conventional statistical regression with **Elastic Net regularization**, enabling biomarker selection from correlated molecular predictors and evaluation of their incremental predictive contribution beyond clinical baseline models.
 
-Three complementary regression approaches are implemented or planned:
+Three complementary regression approaches are included:
 
 - 🩺 **Logistic regression:** Prediction of incident vertebral and nonvertebral fractures.
-- 📈 **Multiple linear regression:** Prediction of continuous musculoskeletal and biochemical outcomes, including baseline BMD, BMD change, grip strength, and selected bone metabolism markers.
-- ⏱️ **Cox proportional hazards regression:** Prediction of time to incident nonvertebral fracture.
+- 📈 **Multiple linear regression:** Prediction of continuous musculoskeletal and biochemical outcomes, including baseline BMD, longitudinal BMD change, grip strength, and selected bone metabolism markers.
+- ⏱️ **Cox proportional hazards regression:** Prediction of time to incident nonvertebral fracture, incorporating follow-up duration and censoring.
 
-The principal objective is to determine whether circulating biomarkers improve predictive performance beyond clinical baseline models.
+The principal objective is to determine whether circulating molecular biomarkers improve predictive performance beyond established clinical risk factors.
 
-### Biomarker Integration Strategy
+### 🧬 Biomarker Integration Strategy
 
 The framework investigates three molecular biomarker configurations:
 
@@ -36,7 +33,7 @@ The framework investigates three molecular biomarker configurations:
 2. **BTMs only:** Circulating biochemical markers of bone metabolism.
 3. **miRNAs + BTMs:** Combined molecular predictors from both biomarker categories.
 
-The logistic and Cox regression frameworks evaluate all three biomarker configurations.
+The logistic and Cox regression frameworks support all three biomarker configurations.
 
 The multiple linear regression framework evaluates miRNAs and BTMs separately, without a combined miRNA + BTM model.
 
@@ -50,7 +47,7 @@ The multiple linear regression framework evaluates miRNAs and BTMs separately, w
 4. Apply Elastic Net regularization to select informative biomarkers from high-dimensional and correlated molecular predictors.
 5. Evaluate whether selected biomarkers improve prediction beyond established clinical risk factors.
 6. Compare predictive performance across binary, continuous, and time-to-event outcomes.
-7. Assess the stability of biomarker selection across repeated training and testing partitions.
+7. Assess biomarker selection stability across repeated training and testing partitions.
 8. Develop a reusable computational framework for molecular biomarker discovery and clinical prediction.
 
 ---
@@ -59,15 +56,22 @@ The multiple linear regression framework evaluates miRNAs and BTMs separately, w
 
 ### 🔹 OPUS Cohort
 
-The analyses use data from the Osteoporosis and Ultrasound Study (OPUS), comprising approximately **1,128 postmenopausal women aged 55–80 years**.
+The analyses use data from the **Osteoporosis and Ultrasound Study (OPUS)**, comprising approximately **1,128 postmenopausal women aged 55–80 years**.
 
-The dataset includes clinical characteristics, bone mineral density measurements, circulating molecular biomarkers, and longitudinal information on incident osteoporotic fractures.
+The dataset includes:
 
-The cohort provides a framework for investigating relationships between circulating molecular markers, skeletal health, and fracture outcomes.
+- Clinical and demographic characteristics.
+- Bone mineral density measurements.
+- Circulating microRNA expression profiles.
+- Biochemical markers of bone metabolism.
+- Longitudinal information on incident osteoporotic fractures.
+- Musculoskeletal and biochemical phenotypes.
+
+The cohort provides a framework for investigating associations between circulating molecular markers, skeletal health, and fracture outcomes.
 
 ### 🔹 1. Circulating MicroRNAs (miRNAs)
 
-Serum microRNAs were measured using the osteomiR platform, which profiles 19 candidate miRNAs.
+Serum microRNAs were measured using the osteomiR platform, profiling 19 candidate miRNAs.
 
 The analytical framework incorporates pairwise miRNA expression ratios to investigate relative molecular expression patterns and identify potentially informative biomarker combinations.
 
@@ -83,7 +87,7 @@ The analytical framework incorporates pairwise miRNA expression ratios to invest
 
 ### 🔹 2. Bone Turnover Markers (BTMs)
 
-The analyses incorporate circulating biochemical markers associated with bone formation, resorption, and bone metabolism.
+The analyses incorporate circulating biochemical markers associated with bone formation, resorption, and mineral metabolism.
 
 **Investigated markers include:**
 
@@ -92,7 +96,7 @@ The analyses incorporate circulating biochemical markers associated with bone fo
 - **C-terminal telopeptide of type I collagen (CTX):** Marker of bone resorption.
 - **Parathyroid hormone (PTH):** Hormone involved in calcium homeostasis and bone metabolism.
 
-These biomarkers provide complementary information about bone remodeling processes.
+These markers provide complementary information about bone remodeling processes.
 
 ### 🔹 3. Clinical Baseline Predictors
 
@@ -105,15 +109,15 @@ Clinical baseline models incorporate outcome-specific combinations of:
 - Prevalent vertebral or nonvertebral fracture history.
 - Additional clinical or technical covariates where applicable.
 
-The exact baseline model is defined separately for each outcome.
+The exact clinical baseline model is defined separately for each outcome.
 
-**All biomarker-augmented models are compared against their corresponding clinical baseline models.**
+**All biomarker-augmented models are evaluated relative to their corresponding clinical baseline models.**
 
 ---
 
 ## ⚙️ Shared Computational Analysis Framework
 
-The regression pipelines follow a common analytical strategy, adapted to the statistical properties of each outcome.
+The three regression pipelines follow a common analytical strategy, adapted to the statistical characteristics of each outcome.
 
 ### 🔹 1. Data Import and Preprocessing
 
@@ -122,7 +126,7 @@ The workflow imports clinical and molecular biomarker datasets and prepares them
 **Main analytical steps:**
 
 - Import clinical and biomarker data from Excel files.
-- Define outcome variables and baseline predictors.
+- Define outcome variables and mandatory baseline predictors.
 - Identify candidate miRNA and BTM predictors.
 - Evaluate missing observations.
 - Remove invalid or noninformative biomarker columns.
@@ -131,22 +135,24 @@ The workflow imports clinical and molecular biomarker datasets and prepares them
 - Generate numerical predictor matrices.
 - Standardize molecular predictors where required.
 
+The Cox implementation additionally validates participant identifiers, fracture event coding, and follow-up durations.
+
 ### 🔹 2. Construction of Clinical Baseline Models
 
 For each clinical outcome, a baseline model is constructed using established clinical predictors without the molecular biomarkers under investigation.
 
 These baseline models provide the reference for evaluating incremental biomarker performance.
 
-The same outcome-specific baseline definition is retained when comparing molecular biomarker configurations.
+The same outcome-specific clinical predictor definition is retained when comparing molecular biomarker configurations.
 
 ### 🔹 3. Individual Biomarker Screening
 
-Candidate molecular biomarkers are evaluated individually by adding them to the corresponding baseline clinical model.
+Candidate molecular biomarkers are evaluated individually by adding them to the corresponding clinical baseline model.
 
 **Main analytical steps:**
 
-- Fit baseline regression models.
-- Add candidate biomarkers individually.
+- Fit the baseline regression model.
+- Add each candidate biomarker individually.
 - Estimate biomarker-associated regression coefficients.
 - Calculate statistical significance.
 - Compare baseline and biomarker-augmented models.
@@ -165,13 +171,15 @@ The workflow uses the `glmnet` framework for regularized regression.
 
 - **Alpha (α):** Controls the balance between LASSO and Ridge regularization.
 - **Lambda (λ):** Controls the overall strength of regularization.
-- **Cross-validation folds:** Used to optimize the regularization parameters within the training data.
+- **Cross-validation folds:** Used to optimize regularization parameters within training data.
 
 Elastic Net is applied to select informative molecular biomarkers from potentially correlated predictor sets.
 
+In the Cox implementation, mandatory clinical predictors are retained without penalization using `penalty.factor = 0`.
+
 ### 🔹 5. Biomarker Model Configurations
 
-Three biomarker configurations are considered across the project.
+Three molecular biomarker configurations are considered.
 
 **Model A — miRNAs only**
 
@@ -185,43 +193,41 @@ Clinical baseline predictors are combined with selected bone turnover markers.
 
 Clinical baseline predictors are combined with selected biomarkers from both molecular categories.
 
-Model C is evaluated in the logistic regression analyses and is planned for the Cox regression analyses, but not in the multiple linear regression workflow.
+Model C is included in the logistic regression framework and supported by the Cox regression framework, but is not evaluated in the multiple linear regression workflow.
 
-### 🔹 6. Regression Model Refitting
+### 🔹 6. Conventional Regression Model Refitting
 
-Selected biomarkers can be incorporated into conventional regression models alongside mandatory clinical predictors.
+Selected biomarkers are incorporated into conventional regression models alongside mandatory clinical predictors.
 
-This allows estimation of interpretable regression coefficients and comparison of clinical baseline models with biomarker-augmented models.
+This enables estimation of interpretable regression coefficients and comparison of clinical baseline models with biomarker-augmented models.
 
 **Effect estimates depend on the regression family:**
 
-- Logistic regression: Odds ratios.
-- Multiple linear regression: Regression coefficients.
-- Cox regression: Hazard ratios.
+- Logistic regression: Odds ratios (OR).
+- Multiple linear regression: Regression coefficients (β).
+- Cox regression: Hazard ratios (HR).
 
-Statistical inference following data-driven biomarker selection is interpreted cautiously because selection may introduce bias.
+Statistical inference following data-driven biomarker selection is interpreted cautiously because selection can introduce bias.
 
 ### 🔹 7. Repeated Train/Test Evaluation
 
-The logistic and linear regression implementations use repeated training and testing partitions to assess predictive performance.
+The supplied regression workflows use repeated training and testing partitions to evaluate predictive performance.
 
-The supplied scripts specify:
+The implementations specify:
 
-- 50 random train/test splits.
-- 70% training / 30% testing.
-- Consistent partitions for comparisons within each analysis.
+- **50 random train/test splits.**
+- **70% training / 30% testing.**
+- Consistent partitions for model comparisons within each analysis.
 - Biomarker selection using training observations.
 - Predictive performance evaluation using held-out observations.
 
-The logistic regression implementation also incorporates class-imbalance handling within the training data.
+The logistic regression framework incorporates class-imbalance handling within training data.
 
-The test-set event distribution is preserved.
-
-The Cox regression validation strategy will be documented after its implementation is finalized.
+The Cox regression framework uses event-stratified splits without class balancing.
 
 ### 🔹 8. Model Performance and Biomarker Stability
 
-Predictive performance is evaluated using metrics appropriate to the outcome type.
+Predictive performance is evaluated using metrics appropriate to each outcome type.
 
 The framework also examines biomarker selection frequencies across repeated partitions to investigate selection stability.
 
@@ -231,18 +237,18 @@ Repeated-split performance estimates provide internal validation but do not repl
 
 ## 🩺 Pipeline 1: Logistic Regression — Incident Osteoporotic Fractures
 
-### Research Objective
+### 🎯 Research Objective
 
-To identify circulating molecular biomarkers that improve the prediction of incident osteoporotic fractures beyond established clinical risk factors.
+To identify circulating molecular biomarkers that improve prediction of incident osteoporotic fractures beyond established clinical risk factors.
 
-### Clinical Outcomes
+### 🧪 Clinical Outcomes
 
 Two binary outcomes are investigated:
 
 1. **Incident vertebral fracture.**
 2. **Incident nonvertebral fracture.**
 
-### Biomarker Model Comparisons
+### 🧬 Biomarker Model Comparisons
 
 Four predictive model configurations are evaluated.
 
@@ -255,7 +261,9 @@ Four predictive model configurations are evaluated.
 
 The combined model investigates whether the two molecular biomarker categories provide complementary predictive information.
 
-### Statistical and Machine-Learning Methods
+### 🤖 Statistical and Machine-Learning Methods
+
+The logistic regression workflow incorporates:
 
 - Binary logistic regression using `glm()`.
 - Individual biomarker screening.
@@ -265,8 +273,10 @@ The combined model investigates whether the two molecular biomarker categories p
 - Selection of biomarkers with nonzero coefficients.
 - Conventional logistic regression refitting.
 - Comparison of baseline and biomarker-augmented models.
+- Repeated train/test evaluation.
+- Biomarker selection stability analysis.
 
-### Model Evaluation
+### 📊 Model Evaluation
 
 The workflow evaluates:
 
@@ -276,11 +286,11 @@ The workflow evaluates:
 - **Odds ratios (OR):** Association estimates for selected biomarkers.
 - **Statistical significance:** Regression and model-comparison tests.
 - **FDR-adjusted p-values:** Multiple-testing adjustment where implemented.
-- **Biomarker selection frequency:** Stability across repeated data partitions.
+- **Biomarker selection frequency:** Stability across repeated partitions.
 
-The supplied logistic implementation includes NRI evaluation using risk thresholds of 0.10 and 0.20.
+The logistic implementation includes NRI evaluation using risk thresholds of 0.10 and 0.20.
 
-### Generated Outputs
+### 📂 Generated Outputs
 
 - Individual biomarker screening tables.
 - Elastic Net-selected biomarker combinations.
@@ -295,11 +305,11 @@ The supplied logistic implementation includes NRI evaluation using risk threshol
 
 ## 📈 Pipeline 2: Multiple Linear Regression — Continuous Musculoskeletal Outcomes
 
-### Research Objective
+### 🎯 Research Objective
 
 To investigate associations between circulating molecular biomarkers and continuous musculoskeletal or biochemical outcomes, and evaluate whether molecular predictors improve performance beyond clinical baseline models.
 
-### Investigated Outcomes
+### 🧪 Investigated Outcomes
 
 **Bone Mineral Density**
 
@@ -322,7 +332,7 @@ To investigate associations between circulating molecular biomarkers and continu
 - PTH.
 - CTX.
 
-### Biomarker Model Comparisons
+### 🧬 Biomarker Model Comparisons
 
 Three model configurations are evaluated:
 
@@ -336,9 +346,9 @@ Three model configurations are evaluated:
 
 The miRNA-only and BTM-only analyses are conducted separately for the relevant continuous outcomes.
 
-When a biochemical marker is itself the outcome, the predictor set must be defined to avoid including the outcome as its own predictor.
+When a biochemical marker is itself the outcome, the predictor set must exclude that outcome to avoid self-prediction.
 
-### Statistical and Machine-Learning Methods
+### 🤖 Statistical and Machine-Learning Methods
 
 - Multiple linear regression using `lm()`.
 - Individual biomarker screening.
@@ -347,8 +357,10 @@ When a biochemical marker is itself the outcome, the predictor set must be defin
 - Selection of informative molecular predictors.
 - Conventional linear regression refitting.
 - Comparison of baseline and biomarker-augmented predictions.
+- Repeated training and testing partitions.
+- Biomarker selection stability analysis.
 
-### Model Evaluation
+### 📊 Model Evaluation
 
 The workflow evaluates:
 
@@ -360,7 +372,7 @@ The workflow evaluates:
 - **Residual diagnostics:** Evaluation of regression assumptions where applicable.
 - **Selection frequency:** Stability of biomarker identification across repeated splits.
 
-### Generated Outputs
+### 📂 Generated Outputs
 
 - Individual biomarker screening results.
 - Elastic Net-selected predictor sets.
@@ -374,85 +386,237 @@ The workflow evaluates:
 
 ## ⏱️ Pipeline 3: Cox Proportional Hazards Regression — Time to Incident Nonvertebral Fracture
 
-### Research Objective
+### 🎯 Research Objective
 
-To investigate circulating molecular biomarkers associated with time to incident nonvertebral fracture and determine whether they improve survival prediction beyond established clinical risk factors.
+To identify circulating molecular biomarkers associated with time to incident nonvertebral fracture and evaluate whether their inclusion improves survival prediction beyond established clinical risk factors.
 
-Unlike logistic regression, which models fracture occurrence as a binary outcome, Cox regression incorporates follow-up duration and censoring information.
+Unlike logistic regression, which models fracture occurrence as a binary outcome, Cox proportional hazards regression incorporates follow-up duration and censoring information.
 
-### Clinical Outcome
+### 🧪 Clinical Outcome and Data Preparation
 
-**Time to incident nonvertebral fracture.**
+**Primary outcome:** Time to incident nonvertebral fracture.
 
-The analysis requires:
+The analysis incorporates:
 
-- Follow-up duration.
-- Incident nonvertebral fracture status.
-- Clinical baseline predictors.
-- Circulating miRNA ratios.
+- Follow-up duration, measured in months.
+- Incident nonvertebral fracture status (0 = censored, 1 = event).
+- Mandatory clinical baseline predictors.
+- Circulating microRNA ratios.
 - Bone turnover markers.
 
-### Biomarker Model Comparisons
+The Cox workflow performs:
 
-Four model configurations will be evaluated:
+- Complete-case filtering.
+- Validation of participant identifiers.
+- Verification of binary fracture event coding.
+- Validation of follow-up duration.
+- Identification of nonpositive follow-up times.
+- Removal of all-zero biomarker columns.
+- Molecular predictor standardization.
+- Preparation of survival outcome and predictor matrices.
+
+Records with nonpositive follow-up times are explicitly identified and either excluded with an audit file or cause execution to stop, depending on the configured setting.
+
+### 🧬 Biomarker Model Comparisons
+
+The Cox framework supports four model configurations:
 
 | Model | Predictors |
 |---|---|
-| Baseline | Clinical predictors only |
-| Baseline + miRNAs | Clinical predictors + selected miRNA ratios |
-| Baseline + BTMs | Clinical predictors + selected bone turnover markers |
-| Baseline + miRNAs + BTMs | Clinical predictors + selected miRNAs and BTMs |
+| Baseline | Mandatory clinical predictors |
+| Baseline + miRNAs | Clinical predictors + circulating miRNA ratios |
+| Baseline + BTMs | Clinical predictors + bone turnover markers |
+| Baseline + miRNAs + BTMs | Clinical predictors + both biomarker categories |
 
-The combined model will investigate whether integrating miRNAs and BTMs improves time-to-fracture prediction beyond either biomarker category alone.
+These configurations allow evaluation of the incremental prognostic contribution of individual biomarker categories and their combination.
 
-### Planned Statistical and Machine-Learning Methods
+The Cox script processes the candidate biomarker columns supplied in the input dataset. Each molecular configuration therefore requires an appropriately prepared input dataset.
 
-The intended analytical framework includes:
+### 🔬 1. Individual Biomarker Cox Regression
 
-- Cox proportional hazards regression.
-- Elastic Net regularization for survival outcomes.
-- Cross-validation for regularization parameter optimization.
+Candidate biomarkers are evaluated individually by adding each molecular predictor to the mandatory clinical baseline model.
+
+The analysis uses:
+
+- Cox proportional hazards regression using `survival::coxph()`.
+- Breslow approximation for tied event times.
+- 50 stratified train/test partitions.
+- 70% training and 30% testing observations.
+- Stratification according to fracture event status.
+- Conventional Cox regression without class balancing.
+
+For each biomarker, the workflow estimates:
+
+- Regression coefficient and standard error.
+- Hazard ratio (HR).
+- 95% confidence interval for the hazard ratio.
+- Wald z-statistic and p-value.
+- Harrell's C-index on held-out observations.
+- Change in C-index relative to the baseline model.
+- Nested partial-likelihood ratio test.
+- Training AIC and BIC.
+- Proportional hazards diagnostics.
+
+The individual biomarker screening threshold is configurable and is set to **p < 0.10** in the supplied implementation.
+
+### 🤖 2. Elastic Net Cox Regression
+
+The workflow applies Elastic Net regularization using `glmnet` with the Cox survival family.
+
+**Hyperparameter optimization:**
+
+| Parameter | Configuration |
+|---|---|
+| Alpha (α) | 0.05–1.00 |
+| Alpha increment | 0.05 |
+| Cross-validation folds | 5, 10, 20 |
+| Lambda selection | `lambda.min` |
+| Cross-validation criterion | Concordance |
+| Training/test splits | 50 |
+| Training proportion | 70% |
+| Testing proportion | 30% |
+
+Internal cross-validation folds are stratified by fracture event status.
+
+**Mandatory clinical predictors are included without penalization** using `penalty.factor = 0`, while candidate molecular biomarkers are subject to regularization.
+
+This preserves the mandatory clinical predictors while allowing Elastic Net to select additional molecular biomarkers.
+
+### 📊 3. Baseline and Biomarker-Augmented Model Comparison
+
+The machine-learning baseline is fitted using Ridge-regularized Cox regression with mandatory clinical predictors.
+
+Biomarker-augmented Elastic Net models are evaluated using the same training and testing partitions.
+
+Model comparisons include:
+
+- Baseline C-index.
+- Biomarker-augmented C-index.
+- Change in C-index (ΔC-index).
+- Cross-validated concordance.
+- Selected regularization parameters.
+- Number and identity of selected molecular predictors.
+
+The C-index is calculated using `survival::concordance()`, accounting for the direction of Cox linear risk scores.
+
+### 🔁 4. Repeated Train/Test Validation
+
+The analysis uses **50 stratified random train/test splits**, with 70% of observations assigned to training and 30% to testing.
+
+The same partitions are reused across:
+
 - Individual biomarker screening.
-- Multivariable biomarker selection.
+- Elastic Net modeling.
 - Conventional Cox regression refitting.
-- Comparison of baseline and biomarker-augmented survival models.
-- Assessment of biomarker selection stability.
-- Evaluation of proportional hazards assumptions.
 
-### Planned Model Evaluation
+The workflow summarizes predictive performance across repeated partitions, including:
 
-Potential evaluation measures include:
+- Mean C-index.
+- Mean ΔC-index.
+- Variation across random splits.
+- Empirical 2.5th–97.5th percentile performance ranges.
+- Biomarker selection frequencies.
 
-- **Hazard ratios (HR):** Associations between biomarkers and fracture hazard.
-- **Concordance index (C-index):** Discrimination of survival predictions.
-- **Time-dependent ROC-AUC:** Discrimination at specified follow-up times.
-- **Likelihood-ratio tests:** Comparison of nested Cox models.
-- **Proportional hazards diagnostics:** Assessment of model assumptions.
+These empirical ranges describe variability across repeated partitions and are not independent-sample confidence intervals.
 
-The exact validation strategy, follow-up horizons, and reported metrics will be confirmed after the Cox script is finalized.
+### 🧬 5. Biomarker Selection and Stability Assessment
 
-### Development Status
+Elastic Net identifies molecular predictors with nonzero fitted coefficients.
 
-The Cox regression analysis is planned for time to incident nonvertebral fracture, using the three biomarker configurations described above.
+The workflow records selected variables across combinations of:
 
-Its final implementation and analytical results will be documented when the Cox script is available.
+- Random training/test splits.
+- Alpha values.
+- Cross-validation fold configurations.
+
+Biomarker selection frequencies are calculated to evaluate consistency of molecular predictor identification.
+
+For individual biomarker screening, the script defines a robustness threshold requiring:
+
+- Statistical significance in at least **80% of the 50 splits**.
+- Positive mean improvement in C-index relative to the clinical baseline model.
+
+This corresponds to at least 40 significant splits.
+
+Selection stability is interpreted as an internal measure of consistency rather than evidence of external validation.
+
+### 📈 6. Conventional Cox Regression Refitting
+
+Following Elastic Net feature selection, selected biomarker combinations are refitted using conventional Cox proportional hazards regression alongside mandatory clinical predictors.
+
+The refitted models provide interpretable estimates including:
+
+- Regression coefficients.
+- Hazard ratios.
+- Standard errors.
+- Wald z-statistics.
+- P-values.
+- Confidence intervals.
+- FDR-adjusted p-values.
+- Model comparison statistics.
+
+These estimates are exploratory because biomarker selection and conventional regression refitting use overlapping training observations.
+
+### 🩺 7. Proportional Hazards Diagnostics
+
+The workflow evaluates the proportional hazards assumption using `survival::cox.zph()`.
+
+Diagnostics include:
+
+- Global proportional hazards tests.
+- Biomarker-specific proportional hazards tests.
+- Recording diagnostic p-values across repeated partitions.
+
+The workflow also checks for nonconvergent models, nonfinite coefficients, and invalid covariance estimates.
+
+Models that fail specified validity checks are excluded from the corresponding results and recorded for review.
+
+### 📂 8. Generated Outputs
+
+The Cox pipeline generates:
+
+- Individual biomarker screening results.
+- Hazard ratios and coefficient summaries.
+- Baseline and biomarker-augmented C-index comparisons.
+- Elastic Net hyperparameter evaluation tables.
+- Selected biomarker combinations.
+- Biomarker selection-frequency summaries.
+- Conventional Cox regression refitting results.
+- Proportional hazards diagnostics.
+- Failed-model and data-exclusion logs.
+- Interactive HTML tables.
+- Excel reports and diagnostic visualizations.
+
+### 🔬 Interpretation
+
+The Cox regression pipeline extends the OPUS biomarker-discovery framework from binary fracture prediction to time-to-event analysis.
+
+Its primary purpose is to determine whether circulating miRNAs, BTMs, or their combination improve prediction of time to incident nonvertebral fracture beyond mandatory clinical predictors.
+
+The framework incorporates regularized biomarker selection, repeated internal validation, conventional Cox regression refitting, and proportional hazards diagnostics.
+
+Results should be interpreted as internally validated exploratory findings until independently replicated.
 
 ---
 
 ## 📊 Comparison of the Three Regression Pipelines
 
-| Characteristic | Logistic | Multiple Linear | Cox |
+| Characteristic | Logistic Regression | Multiple Linear Regression | Cox Regression |
 |---|---|---|---|
 | Outcome type | Binary | Continuous | Time to event |
-| Main outcomes | Vertebral and nonvertebral fractures | BMD, BMD change, grip strength, biochemical traits | Nonvertebral fracture timing |
+| Main outcomes | Vertebral and nonvertebral fractures | BMD, BMD change, grip strength, biochemical traits | Time to nonvertebral fracture |
 | Regression family | Binomial | Gaussian | Cox |
-| Regularization | Elastic Net | Elastic Net | Planned Elastic Net |
-| miRNAs only | Yes | Yes | Yes, planned |
-| BTMs only | Yes | Yes | Yes, planned |
-| miRNAs + BTMs | Yes | No | Yes, planned |
-| Class imbalance handling | Training only | Not applicable | To be defined |
+| Regularization | Elastic Net | Elastic Net | Elastic Net |
+| miRNAs only | Yes | Yes | Supported |
+| BTMs only | Yes | Yes | Supported |
+| miRNAs + BTMs | Yes | No | Supported |
+| Repeated splits | 50 | 50 | 50 |
+| Training/test ratio | 70/30 | 70/30 | 70/30 |
+| Class imbalance handling | Training only | Not applicable | No class balancing |
 | Main effect estimates | Odds ratios | Regression coefficients | Hazard ratios |
-| Main prediction metrics | AUC, ΔAUC, NRI | R², RMSE, MAE | C-index, time-dependent AUC (planned) |
+| Main prediction metrics | AUC, ΔAUC, NRI | R², RMSE, MAE | C-index, ΔC-index |
+| Additional diagnostics | Model comparison tests | Residual diagnostics | Proportional hazards tests |
+| Biomarker stability | Selection frequencies | Selection frequencies | Selection frequencies |
 
 ---
 
@@ -466,9 +630,11 @@ Its final implementation and analytical results will be documented when the Cox 
 - `tidymodels`
 - `lmtest`
 
-### 🩺 Clinical Prediction and Model Evaluation
+### 🩺 Clinical Prediction and Survival Analysis
 
+- `survival`
 - `pROC`
+- `broom`
 - Base R statistical functions
 
 ### 🔄 Data Processing
@@ -484,28 +650,30 @@ Its final implementation and analytical results will be documented when the Cox 
 - `knitr`
 - `kableExtra`
 - `DT`
+- `htmltools`
 
-Additional survival-analysis dependencies will be documented when the Cox pipeline is finalized.
+Package requirements vary between the three analytical workflows.
 
 ---
 
 ## 📂 Repository Structure
 
 ```text
-ElasticNet-miRNA-Biomarker-Discovery-OPUS/
+Elastic-Net-ML-biomarker-discovery-UCSF-collaboration-OPUS-data/
 │
 ├── README.md
 ├── LICENSE
-├── .gitignore
 │
-├── Logistic_Regression.R
-├── Linear_Regression.R
-└── Cox_Regression.R
+├── Logistic_Regression.Rmd
+├── Linear_Regression.Rmd
+└── Cox_Regression.Rmd
 ```
 
-The filenames above are suggested names. They should be replaced with the actual uploaded filenames.
+The filenames above are illustrative and should be replaced with the actual filenames used in the repository.
 
-If the workflows contain executable R code chunks, Markdown explanations, and reporting configuration, retaining their `.Rmd` extensions is recommended.
+Each workflow contains the corresponding data preparation, statistical modeling, machine-learning procedures, and reporting sections.
+
+If the uploaded files contain executable R Markdown code chunks, their `.Rmd` extensions should be retained.
 
 ---
 
@@ -518,22 +686,24 @@ To reproduce an analysis:
 1. Install R and the required CRAN or Bioconductor packages.
 2. Obtain the relevant OPUS clinical and biomarker datasets through authorized access.
 3. Configure the input and output directories.
-4. Specify the clinical outcome and baseline predictor variables.
+4. Specify the clinical outcome and mandatory baseline predictor variables.
 5. Select the molecular biomarker configuration.
-6. Configure the random seeds, cross-validation folds, and Elastic Net hyperparameter grid.
+6. Configure random seeds, cross-validation folds, and Elastic Net hyperparameters.
 7. Execute preprocessing and individual biomarker screening.
 8. Perform Elastic Net feature selection.
 9. Refit the corresponding conventional regression model.
-10. Evaluate predictive performance relative to the baseline model.
-11. Review the generated statistical summaries and biomarker selection results.
+10. Evaluate predictive performance relative to the clinical baseline model.
+11. Review statistical summaries and biomarker selection results.
 
 The supplied scripts contain dataset-specific column indices and local file paths that may require adaptation before execution in another computational environment.
+
+The original analyses cannot be reproduced without access to appropriately formatted OPUS datasets.
 
 ---
 
 ## 🔒 Data Availability and Research Ethics
 
-The repository is intended to share computational methods rather than participant-level OPUS data.
+This repository is intended to share computational methods rather than participant-level OPUS data.
 
 Clinical records, individual-level molecular measurements, and restricted research datasets are not included.
 
@@ -545,14 +715,17 @@ Researchers may adapt the computational methods to other clinical or molecular d
 
 ## ⚠️ Methodological Considerations
 
-- Elastic Net performs regularized prediction and variable selection; it does not establish causality.
-- Biomarker selection frequencies describe stability within the evaluated data partitions rather than independent replication.
-- Repeated train/test splits provide internal validation but do not replace external validation.
-- Statistical inference after data-driven biomarker selection may be affected by selection bias.
-- Scaling and other learned preprocessing parameters should be estimated within training partitions to avoid information leakage.
-- Class weighting or resampling can affect predicted probability calibration.
-- Cox regression requires appropriate handling of censoring and assessment of proportional hazards assumptions.
-- Predictive performance may vary across populations, measurement platforms, and clinical settings.
+- **Predictive modeling versus causality:** Elastic Net performs regularized prediction and variable selection; it does not establish causal relationships.
+- **Internal validation:** Repeated train/test splits assess performance variability but do not replace external validation.
+- **Post-selection inference:** Statistical inference following data-driven biomarker selection may be affected by selection bias.
+- **Biomarker stability:** Selection frequencies describe consistency across evaluated data partitions rather than independent replication.
+- **Preprocessing:** The supplied Cox implementation uses global biomarker scaling before data splitting. This can introduce information leakage; training-only scaling is recommended for a more rigorous predictive validation design.
+- **Multiple testing:** The Cox individual-screening implementation calculates FDR adjustment within fitted models. This should not be interpreted as controlling the false discovery rate across all screened biomarkers.
+- **Class imbalance:** Training-set weighting or resampling in logistic regression can influence predicted probability calibration.
+- **Survival analysis:** Cox regression requires appropriate handling of censoring and assessment of proportional hazards assumptions.
+- **Performance generalizability:** Predictive performance may vary across populations, measurement platforms, and clinical settings.
+
+The computational framework is intended for exploratory research and methodological development rather than direct clinical decision-making.
 
 ---
 
@@ -565,20 +738,20 @@ Computational bioinformatics researcher specializing in machine learning, molecu
 This repository documents computational work involving:
 
 - Integration of clinical and molecular predictors.
-- Development of outcome-specific baseline models.
+- Development of outcome-specific clinical baseline models.
 - Individual biomarker screening.
 - Elastic Net regularization and hyperparameter optimization.
 - Logistic regression for incident fracture prediction.
 - Multiple linear regression for continuous musculoskeletal outcomes.
-- Development of a Cox survival-analysis framework for time to nonvertebral fracture.
+- Cox proportional hazards regression for time to nonvertebral fracture.
 - Evaluation of miRNA-only and BTM-only predictive models.
 - Investigation of combined miRNA + BTM models for fracture outcomes.
 - Repeated training and testing procedures.
 - Evaluation of incremental predictive performance.
 - Biomarker selection stability assessment.
-- Statistical reporting and visualization.
+- Statistical diagnostics, reporting, and visualization.
 
-The work was developed in the context of OPUS cohort research and scientific collaborations associated with the University of California, San Francisco.
+The computational work was developed in the context of OPUS cohort research and scientific collaborations associated with the University of California, San Francisco.
 
 ---
 
@@ -586,7 +759,7 @@ The work was developed in the context of OPUS cohort research and scientific col
 
 This repository is distributed under the terms specified in the `LICENSE` file.
 
-If the repository uses the MIT License, users may reuse, modify, and distribute the licensed code subject to the license conditions.
+If the repository uses the MIT License, users may reuse, modify, and distribute the licensed code subject to its conditions.
 
 The license applies to the released code and does not grant access to restricted clinical datasets or third-party proprietary materials.
 
@@ -598,6 +771,6 @@ The license applies to the released code and does not grant access to restricted
 
 GitHub: https://github.com/davicarro
 
-For scientific inquiries, methodological questions, or research collaborations, please contact the author through GitHub.
+For scientific inquiries, methodological questions, or research collaborations, please contact the repository author through GitHub.
 
 If these computational methods contribute to published research, users are encouraged to cite the corresponding scientific publication in addition to acknowledging the software repository.
